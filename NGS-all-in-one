@@ -1,0 +1,3203 @@
+#! /bin/bash
+
+#unset DISPLAY
+RED='\033[0;31m'
+NC='\033[0m' # No Color
+GREEN='\033[1;32m'
+APPNAME="NGS-all-in-one"
+
+#FUNCTIONS
+function f_fastq_download {
+	set +e
+	SOURCE=$(dialog --title "Please, select the file with urls to the FASTQ files you want to download." --fselect ""$SHARE_DIR"/" 10 0 0 2>&1 >/dev/tty)
+	eval ${SETMODE}
+        if [[ ! -e "$SOURCE" ]] ; then
+        dialog --colors --msgbox "\Zb\Z1The \Z4"$SOURCE"\Z1 file does not exist." 0 0 2>&1 >/dev/tty
+                touch ""$TMPDIR"/job_error."$RUN""
+                return 1
+        elif [[ -z $(cat "$SOURCE" | egrep "^http.*\.fastq\.gz") ]]; then
+        dialog --colors --msgbox "\Zb\Z1The \Z4"$SOURCE"\Z1 file does not contain urls to FASTQ files." 0 0 2>&1 >/dev/tty
+                touch ""$TMPDIR"/job_error."$RUN""
+                return 1
+        fi
+	set +e
+	DESTDIR=$(dialog --title "Please, select the directory where the downloaded FASTQ files should be stored." --fselect ""$SHARE_DIR"/" 10 0 0 2>&1 >/dev/tty)
+	eval ${SETMODE}
+if [[ ! -d "$DESTDIR" ]] && [[ ! -f "$DESTDIR" ]] ; then
+	set +e
+        dialog --colors --yesno "\Zb\Z1The \Z4"$DESTDIR"\Z1 directory does not exist. Do you want to create it?" 0 0 2>&1 >/dev/tty
+	local EXITCODE="$?"
+	eval ${SETMODE}
+	if [[ "$EXITCODE" == 0 ]]; then
+		mkdir -p "$DESTDIR"
+	else
+		touch ""$TMPDIR"/job_error."$RUN""
+		return 1
+	fi
+elif [[ ! -d "$DESTDIR" ]] && [[ -e "$DESTDIR" ]] ; then
+	dialog --colors --msgbox "\Zb\Z1The \Z4"$DESTDIR"\Z1 directory cannot be created because a file with the same name exists." 0 0 2>&1 >/dev/tty
+                touch ""$TMPDIR"/job_error."$RUN""
+                return 1
+elif [[ ! -z $(ls "$DESTDIR") ]]; then
+	set +e
+        dialog --colors --defaultno --yesno "\Zb\Z1The \Z4"$DESTDIR"\Z1 directory is not empty.\nDo you still want to save the FASTQ files in this location?" 0 0 2>&1 >/dev/tty
+        local EXITCODE="$?"
+        eval ${SETMODE}
+        if [[ "$EXITCODE" == 1 ]]; then 
+		touch ""$TMPDIR"/job_error."$RUN""
+                return 1
+	else
+		mkdir -p "$DESTDIR"
+	fi
+fi
+
+set +e
+HTTPFTPUSER=$(dialog --colors --inputbox "Please, provide \Zb\Z4your user name\Zn to the HTTP/FTP server from which the FASTQ files are to be downloaded. \Zb\Z4Leave this field empty\Zn if the connection to the server does not require authentication." 0 0 2>&1 >/dev/tty)
+eval ${SETMODE}
+
+if [[ -n "$HTTPFTPUSER" ]]; then
+	unset HTTPFTPPASS
+	until [[ -n "$HTTPFTPPASS" ]]
+	do
+		set +e
+		HTTPFTPPASS=$(dialog --colors --inputbox "Please, provide \Zb\Z4your password\Zn to the HTTP/FTP server from which the FASTQ files are to be downloaded." 0 0 2>&1 >/dev/tty)
+		eval ${SETMODE}
+	done
+fi
+		cd "$DESTDIR"
+		FILESN=$(cat "$SOURCE" | egrep "^http.*\.fastq\.gz" | sort -u | wc -l)
+		COUNTER=0
+		for i in $(cat "$SOURCE" | egrep "^http.*\.fastq\.gz" | sort -u)
+			do
+        			unset EXITCODE
+				set +e
+				let COUNTER++
+				eval ${SETMODE}
+
+        			until [[ "$EXITCODE" == 0 ]]
+        				do
+        					rm -rf $(echo "$i" | awk -F "/" '{print $NF}')
+						echo "$(echo "print(int(round("$COUNTER"./"$FILESN"*100,0)))" | python)" | dialog --colors --gauge "The FASTQ files are being stored in the folder:\n\Zb\Z4"$DESTDIR"\Zn\nFile \Zb\Z2"$COUNTER"\Zn of \Zb\Z2"$FILESN"\Zn." 0 0 2>&1 >/dev/tty
+                			set +e
+					if [[ -n "$HTTPFTPUSER" ]]; then
+						wget --user="${HTTPFTPUSER}" --password="${HTTPFTPPASS}" "$i" >> ""$WORK_DIR"/"$APPNAME".log" 2>&1
+					else
+						wget "$i" >> ""$WORK_DIR"/"$APPNAME".log" 2>&1
+					fi
+                			EXITCODE="$?"
+					eval ${SETMODE}
+        				done
+			done
+			wait
+		dialog --colors --sleep 3 --infobox "All files have been downloaded successfully." 0 0 2>&1 >/dev/tty
+		cd "$TMPDIR"
+}
+
+function f_instance {
+PID="$$"
+if [[ ! -f ""$TMPDIR"/pid" ]]; then
+	echo "$PID" > ""$TMPDIR"/pid"
+elif [[ -f ""$TMPDIR"/pid" ]]; then
+	if [[ -z $(pidof -x "$APPNAME" | grep -o -f ""$TMPDIR"/pid") ]];then	
+		rm ""$TMPDIR"/pid"
+		echo "$PID" > ""$TMPDIR"/pid"
+	else
+		dialog --colors --msgbox "\Zb\Z4"$APPNAME"\Zn is already running. The program will exit now." 0 0 2>&1 >/dev/tty
+		exit 1
+	fi
+fi
+}
+function f_email_correct {
+EC=0
+until [[ "$EC" == 1 ]]
+do
+{
+set +e
+EMAIL=$(dialog --colors --inputbox "Please, provide the \Zb\Z4e-mail address\Zn where notifications on finished tasks will be sent." 0 0 2>&1 >/dev/tty)
+eval ${SETMODE}
+if [[ -z "$EMAIL" ]] || [[ -z $(echo "$EMAIL" | egrep ".+@.+\..+") ]]; then
+dialog --colors --msgbox "\Zb\Z1The provided email address is incorrect.\nPlease, try again." 0 0 2>&1 >/dev/tty
+else
+EC=1
+fi
+}
+done
+}
+function f_cpus {
+ask=0
+until [[ "$ask" == "ok" ]] 
+do
+set +e
+CPUS=$(dialog --colors --inputbox "This system has \Zb\Z4"$PROCESSORS"\Zn CPUS available.\nHow many CPUs do You want to use?\nThe default value is \Zb\Z4"$DEFAULT_CPUS"\Zn." 0 0 2>&1 >/dev/tty)
+eval ${SETMODE}
+	if [[ -z "$CPUS" ]] ; then
+	CPUS="$DEFAULT_CPUS"
+	ask=ok
+	elif [[ ! "$CPUS" -ge 1 ]] || [[ ! "$CPUS" -le "$PROCESSORS"  ]] || [[ -z $(echo "$CPUS" | egrep "^[0-9]+$") ]]; then
+	dialog --colors --msgbox "\Zb\Z1The provided CPU number is incorrect.\nPlease, try again." 0 0 2>&1 >/dev/tty
+	else
+	ask=ok
+	fi
+done
+}
+function f_threads() {
+#The function takes two arguments which is the number of files being analyzed (1) and a multiplier value (2).
+SAMPLESN="$1"
+MULTIPLIER="$2"
+if [[ -z "$SAMPLESN" ]] || [[ "$SAMPLESN" == 0 ]]; then
+SAMPLESN=1
+fi
+
+if [[ -z "$MULTIPLIER" ]] || [[ "$MULTIPLIER" == 0 ]]; then
+MULTIPLIER=1
+fi
+
+THREADS=$(echo "print(int(round("$CPUS"/"$SAMPLESN".*"$MULTIPLIER",0)))" | python)
+if [[ "$THREADS" == 0 ]]; then 
+THREADS=1 
+fi
+}
+function f_timestamp {
+	touch $WORK_DIR/ERRORS.log
+	TIMEFORMAT='The process took %2lR to complete, and the average CPU usage was %P%%.'; (time "$@") 2>&1 | tee ""$TMPDIR"/time_stamp"
+	TIME=$(cat ""$TMPDIR"/time_stamp" | sed -ne 's/\(The process took \)\([0-9]\{1,\}m[0-9]\{1,\}[,.][0-9]\{1,\}s\)\( to complete, and the average CPU usage was .*\)/\2/p')
+	CPU_USAGE=$(cat ""$TMPDIR"/time_stamp" | sed -ne 's/\(The process took .* to complete, and the average CPU usage was \)\(.*\)\./\2/p')
+	MINUTES=$(echo "$TIME" | awk -F[ms] '{print$1}')
+	SECS=$(echo "$TIME" | awk -F[ms] '{print$2}')
+	HOURS=$(echo "print(int("$MINUTES"/60))" | python)
+	DAYS=$(echo "print(int("$HOURS"/24))" | python)
+	HOURS=$(echo "print(int(("$MINUTES"-"$DAYS"*24*60)/60))" | python)
+	MINUTES=$(echo "print("$MINUTES"-("$HOURS"*60)-("$DAYS"*24*60))" | python)	
+	
+	if [[ -f ""$TMPDIR"/runs_list" ]]; then RUNSLIST=$(cat ""$TMPDIR"/runs_list" | sort -u | sed ':a;N;$!ba;s/\n/,/g'); else unset RUNSLIST; fi
+	if [[ -n $RUNSLIST ]]; then
+		if [[ -z $(find $TMPDIR -regex ""$TMPDIR"/job_error.*") ]] && [[ "$?" -eq 0 ]] && [[ -z $(cat $WORK_DIR/ERRORS.log) ]]; then
+			mail -s ""$APPNAME" report" "$EMAIL" <<< ""$OPT" was finished successfully (run(s): $RUNSLIST). The process took "$DAYS" days, "$HOURS" hours, "$MINUTES" minutes, and "$SECS" seconds to complete, and the average CPU usage was "$CPU_USAGE"."
+			dialog --colors --msgbox "\Zb\Z4$OPT\Zn was finished successfully (run(s): \Zb\Z4$RUNSLIST\Zn). The process took \Zb\Z4$DAYS\Zn days, \Zb\Z4$HOURS\Zn hours, \Zb\Z4$MINUTES\Zn minutes, and \Zb\Z4$SECS\Zn seconds to complete, and the average CPU usage was \Zb\Z4"$CPU_USAGE"\Zn." 0 0 2>&1 >/dev/tty
+		else
+			if [[ -n $(cat $WORK_DIR/ERRORS.log) ]]; then
+			dialog --colors --msgbox "\Zb\Z4$OPT\Z1 was not finished due to errors\Zn (run(s): \Zb\Z4$RUNSLIST\Zn). The \Z4$WORK_DIR/ERRORS.log\Z1 file reads as follows:\n\Zb\Z4'$(cat "$WORK_DIR/ERRORS.log" | sed 's/$/\\n/g')'\n\ZnThe process took \Zb\Z4$DAYS\Zn days, \Zb\Z4$HOURS\Zn hours, \Zb\Z4$MINUTES\Zn minutes, and \Zb\Z4$SECS\Zn seconds to complete, and the average CPU usage was \Zb\Z4"$CPU_USAGE"\Zn." 0 0 2>&1 >/dev/tty
+			else
+			dialog --colors --msgbox "\Zb\Z4$OPT\Z1 was not finished due to errors\Zn (run(s): \Zb\Z4$RUNSLIST\Zn).\n\ZnThe process took \Zb\Z4$DAYS\Zn days, \Zb\Z4$HOURS\Zn hours, \Zb\Z4$MINUTES\Zn minutes, and \Zb\Z4$SECS\Zn seconds to complete, and the average CPU usage was \Zb\Z4"$CPU_USAGE"\Zn." 0 0 2>&1 >/dev/tty
+			fi
+		fi
+
+		rm -rf "$TMPDIR"/job_error* $WORK_DIR/ERRORS.log ""$TMPDIR"/runs_list"
+	else
+		if [[ -z $(find $TMPDIR -regex ""$TMPDIR"/job_error.*") ]] && [[ "$?" -eq 0 ]] && [[ -z $(cat $WORK_DIR/ERRORS.log) ]]; then
+			mail -s ""$APPNAME" report" "$EMAIL" <<< ""$OPT" was finished successfully. The process took "$DAYS" days, "$HOURS" hours, "$MINUTES" minutes, and "$SECS" seconds to complete, and the average CPU usage was "$CPU_USAGE"."
+			dialog --colors --msgbox "\Zb\Z4$OPT\Zn was finished successfully. The process took \Zb\Z4$DAYS\Zn days, \Zb\Z4$HOURS\Zn hours, \Zb\Z4$MINUTES\Zn minutes, and \Zb\Z4$SECS\Zn seconds to complete, and the average CPU usage was \Zb\Z4"$CPU_USAGE"\Zn." 0 0 2>&1 >/dev/tty
+		else
+			if [[ -n $(cat $WORK_DIR/ERRORS.log) ]]; then
+			dialog --colors --msgbox "\Zb\Z4$OPT\Z1 was not finished due to errors. The \Z4$WORK_DIR/ERRORS.log\Z1 file reads as follows:\n\Zb\Z4'$(cat "$WORK_DIR/ERRORS.log" | sed 's/$/\\n/g')'\n\ZnThe process took \Zb\Z4$DAYS\Zn days, \Zb\Z4$HOURS\Zn hours, \Zb\Z4$MINUTES\Zn minutes, and \Zb\Z4$SECS\Zn seconds to complete, and the average CPU usage was \Zb\Z4"$CPU_USAGE"\Zn." 0 0 2>&1 >/dev/tty
+			else
+			dialog --colors --msgbox "\Zb\Z4$OPT\Z1 was not finished due to errors.\n\ZnThe process took \Zb\Z4$DAYS\Zn days, \Zb\Z4$HOURS\Zn hours, \Zb\Z4$MINUTES\Zn minutes, and \Zb\Z4$SECS\Zn seconds to complete, and the average CPU usage was \Zb\Z4"$CPU_USAGE"\Zn." 0 0 2>&1 >/dev/tty
+			fi
+		fi
+
+		rm -rf "$TMPDIR"/job_error* $WORK_DIR/ERRORS.log ""$TMPDIR"/runs_list"
+	fi
+}
+function f_selection() {
+# This function takes four arguments. The first one is the file extension, the second one is the folder name, the third one is the status (--on or --off (default)), the fourth is "--alt.name", which changes the default array name from aCHOICES to aCHOICES_ALT, if necessary.
+if [[ "$1" == "[A-Z0-9]+" ]]; then
+EXT="run ID(s)"
+elif [[ "$1" == ".*" ]]; then
+EXT="folder(s)"
+elif [[ "$1" == "\.fa\.gz" ]]; then
+EXT="genome FASTA file(s)"
+elif [[ "$1" == "\.(gtf|gff)\.gz" ]]; then
+EXT="genome annotation GTF/GFF file(s)"
+elif [[ "$1" == "(STAR|HISAT2)" ]]; then
+EXT="DNA/RNA mapping program(s)"
+elif [[ "$1" == "\.(csv|CSV)$" ]]; then
+EXT="CSV file(s)"
+elif [[ "$1" == "\.(bed|BED)$" ]]; then
+EXT="BED file(s)"
+elif [[ "$1" == "\.(txt|TXT)$" ]]; then
+EXT="TXT file"
+else
+EXT="unknown file(s)"
+fi
+
+if [[ -n $(echo "$@" | egrep -o "\-\-on") ]]; then
+	local args=("$@")
+	local DIRS=($(echo "${args[@]:1}" | sed 's/--[^[:space:]]*//g'))
+	local RES=($(ls -A "${DIRS[@]}" | egrep ".*"$1""))
+	if [[ -z $(echo "${RES[@]}") ]]; then
+		dialog --colors --msgbox "The \Zb\Z4$(echo "${DIRS[@]}" | sed 's/ /\n/g' | sed '/^$/d')\Z1\ndirectory does not contain \Z4$EXT\Z1." 0 0 2>&1 >/dev/tty
+                touch ""$TMPDIR"/job_error."$RUN""
+                return 1
+	else
+		aNAMES=($(ls -A "$2" | egrep ".*"$1"" | sed -ne 's/\(.*\)/\1 on/p'))
+	fi
+else
+	local args=("$@")
+	local DIRS=($(echo "${args[@]:1}" | sed 's/--[^[:space:]]*//g'))
+	local RES=($(ls -A "${DIRS[@]}" | egrep ".*"$1""))
+	if [[ -z $(echo "${RES[@]}") ]]; then
+		dialog --colors --msgbox "The \Zb\Z4$(echo "${DIRS[@]}" | sed 's/ /\n/g' | sed '/^$/d')\Z1\ndirectory does not contain \Z4$EXT\Z1." 0 0 2>&1 >/dev/tty
+                touch ""$TMPDIR"/job_error."$RUN""
+                return 1
+	else
+		aNAMES=($(ls -A "$2" | egrep ".*"$1"" | sed -ne 's/\(.*\)/\1 off/p'))
+	fi
+fi
+
+if [[ -z "$RUN" ]] && [[ "$EXT" != "CSV file" ]]; then
+MESSAGE="Please, select the \Zb\Z4$EXT\Zn you want to use/analyze:"
+elif [[ -z "$RUN" ]] && [[ "$EXT" == "CSV file" ]]; then
+MESSAGE="Please, select the \Zb\Z4$EXT\Zn you want to use/analyze.\nColumns should be separated with \Zb\Z4semicolons(;)\Zn, while a \Zb\Z4point (.)\Zn has to be used as a decimal separator."
+elif [[ -n "$RUN" ]] && [[ -z "$FASTQ_TYPE" ]]; then
+MESSAGE="Please, select the \Zb\Z4$EXT\Zn you want to use/analyze:\nRun ID: \Zb\Z4"$RUN"\Zn"
+elif [[ -n "$RUN" ]] && [[ -n "$FASTQ_TYPE" ]] && [[ "$EXT" == "TXT file"  ]]; then
+MESSAGE="Please, select the \Zb\Z4$EXT\Zn with \Zb\Z2gene names\Zn (one symbol per line) to be used for the calculation of the \Zb\Z2gene signature\Zn (\Zb\Z4not mandatory\Zn):\nRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn"
+elif [[ -n "$RUN" ]] && [[ -n "$FASTQ_TYPE" ]]; then
+MESSAGE="Please, select the \Zb\Z4$EXT\Zn you want to use/analyze:\nRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn"
+fi
+
+set +e
+aCMD=(dialog --no-items --colors --checklist "$MESSAGE" 0 0 0)
+if [[ -n $(echo "$@" | egrep -o "\-\-alt\.name") ]]; then
+aCHOICES_ALT=($("${aCMD[@]}" "${aNAMES[@]}" 2>&1 >/dev/tty))
+else
+aCHOICES=($("${aCMD[@]}" "${aNAMES[@]}" 2>&1 >/dev/tty))
+fi
+eval ${SETMODE}
+}
+
+function f_selection_single() {
+# This function takes two arguments. The first one is the file extension, the second one is the folder name.
+if [[ "$1" == "[A-Z0-9]+" ]]; then
+EXT="run ID"
+elif [[ "$1" == ".*" ]]; then
+EXT="folder"
+elif [[ "$1" == "\.fa\.gz" ]]; then
+EXT="genome FASTA file"
+elif [[ "$1" == "\.(gtf|gff)\.gz" ]]; then
+EXT="genome annotation GTF/GFF file(s)"
+elif [[ "$1" == "[_.]+genom.*" ]]; then
+EXT="genome"
+elif [[ "$1" == "^(Nextera|TruSeq).*\.fa$" ]]; then
+EXT="Nextera/TruSeq NGS adapters file"
+elif [[ "$1" == "\.(csv|CSV)$" ]]; then
+EXT="CSV file"
+elif [[ "$1" == "\.(bed|BED)$" ]]; then
+EXT="BED file"
+elif [[ "$1" == "\.(txt|TXT)$" ]]; then
+EXT="TXT file"
+else
+EXT="unknown file"
+fi
+local args=("$@")
+local DIRS=($(echo "${args[@]:1}" | sed 's/--[^[:space:]]*//g'))
+local RES=($(ls -A "${DIRS[@]}" | egrep ".*"$1""))
+if [[ -z $(echo "${RES[@]}") ]]; then
+	dialog --colors --msgbox "The \Zb\Z4$(echo "${DIRS[@]}" | sed 's/ /\n/g' | sed '/^$/d')\Z1\ndirectory does not contain \Z4$EXT\Z1." 0 0 2>&1 >/dev/tty
+        touch ""$TMPDIR"/job_error."$RUN""
+        return 1
+else
+	aNAMES=($(ls -A "$2" | egrep ".*"$1""))
+fi
+if [[ -z "$RUN" ]] && [[ "$EXT" != "CSV file" ]]; then
+MESSAGE="Please, select the \Zb\Z4$EXT\Zn you want to use/analyze:"
+elif [[ -z "$RUN" ]] && [[ "$EXT" == "CSV file" ]]; then
+MESSAGE="Please, select the \Zb\Z4$EXT\Zn you want to use/analyze.\nColumns should be separated with \Zb\Z4semicolons(;)\Zn, while a \Zb\Z4point (.)\Zn has to be used as a decimal separator."
+elif [[ -n "$RUN" ]] && [[ -z "$FASTQ_TYPE" ]]; then
+MESSAGE="Please, select the \Zb\Z4$EXT\Zn you want to use/analyze:\nRun ID: \Zb\Z4"$RUN"\Zn"
+elif [[ -n "$RUN" ]] && [[ -n "$FASTQ_TYPE" ]] && [[ "$EXT" == "TXT file"  ]]; then
+MESSAGE="Please, select the \Zb\Z4$EXT\Zn with \Zb\Z2gene names\Zn (one symbol per line) to be used for the calculation of the \Zb\Z2gene signature\Zn (\Zb\Z4not mandatory\Zn):\nRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn"
+elif [[ -n "$RUN" ]] && [[ -n "$FASTQ_TYPE" ]]; then
+MESSAGE="Please, select the \Zb\Z4$EXT\Zn you want to use/analyze:\nRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn"
+fi
+set +e
+aCMD=(dialog --no-items --colors --menu "$MESSAGE" 0 0 0)
+CHOICE=$("${aCMD[@]}" "${aNAMES[@]}" 2>&1 >/dev/tty)
+eval ${SETMODE}
+}
+
+function f_parallel() {
+	# Must be executed inside the for loop. This function takes two or three arguments: the job number limit (--limit=) and job multiplier (--multiplier=) and the sleep time (--sleep=). The last argument is optional.
+if [[ -n $(echo "$@" | egrep -o "\-\-limit=[0-9]+\.*[0-9]*") ]]; then
+JOB_LIMIT=$(echo "$@" | egrep -o "\-\-limit=[0-9]+\.*[0-9]*" | cut -d "=" -f2)
+if [[ "$JOB_LIMIT" == 0 ]] || [[ "$JOB_LIMIT" -gt "$CPUS" ]]; then
+JOB_LIMIT="$CPUS"
+fi
+else
+JOB_LIMIT="$CPUS"
+fi
+
+if [[ -n $(echo "$@" | egrep -o "\-\-multiplier=[0-9]+\.*[0-9]*") ]]; then
+JOB_MULTIPLIER=$(echo "$@" | egrep -o "\-\-multiplier=[0-9]+\.*[0-9]*" | cut -d "=" -f2)
+if [[ "$JOB_MULTIPLIER" == 0 ]]; then
+JOB_MULTIPLIER=1
+fi
+else
+JOB_MULTIPLIER=1
+fi
+
+JOB_NUMBER=$(echo "print(int(round("$JOB_LIMIT"*"$JOB_MULTIPLIER",0)))" | python)
+
+if [[ -n $(echo "$@" | egrep -o "\-\-sleep=[0-9]+") ]]; then
+	SLEEPTIME=$(echo "$@" | egrep -o "\-\-sleep=[0-9]+" | cut -d "=" -f2)
+	sleep "$SLEEPTIME"
+else
+	sleep 0
+fi
+
+if [[ $(ps -u | grep "$RUN" | wc -l) -ge "$JOB_NUMBER" ]]; then
+# Wait only for the first job.
+wait -n
+fi
+}
+function f_rename.merge {
+rm -rf ""$TMPDIR"/job_error."$RUN""
+rm -rf ""$TMPDIR"/merge_"*
+set +e
+ORIG_FASTQ_DIR=$(dialog --title "In what directory your FASTQ files are stored?" --fselect "${FASTQ_DIR}/" 10 0 0 2>&1 >/dev/tty)
+eval ${SETMODE}
+	if [[ ! -e "$ORIG_FASTQ_DIR" ]] ; then
+	dialog --colors --msgbox "\Zb\Z1The directory \Z4"$ORIG_FASTQ_DIR"\Z1 does not exist." 0 0 2>&1 >/dev/tty
+		touch ""$TMPDIR"/job_error."$RUN""
+          	return 1
+        elif [[ -z $(ls -A "$ORIG_FASTQ_DIR" | grep "fastq.gz") ]]; then
+	dialog --colors --msgbox "\Zb\Z1The \Z4"$ORIG_FASTQ_DIR"\Z1 does not contain FASTQ files." 0 0 2>&1 >/dev/tty
+		touch ""$TMPDIR"/job_error."$RUN""
+          	return 1
+	fi
+NAME_CORRECT="no"
+until [[ "$NAME_CORRECT" == "yes" ]]
+	do
+	aFILES=($(awk -F "/" '{print $NF}' <(find "$ORIG_FASTQ_DIR" -type f -iregex ".*fastq\.gz")))
+	set +e
+	dialog --cr-wrap --colors --yesno "In the \Zb\Z4"$ORIG_FASTQ_DIR"\Zn folder, the following FASTQ files (\Zb\Z2N="${#aFILES[@]}"\Zn) have been found. Do you want to rename them?\n\Z2$(printf '%s\n' "${aFILES[@]}" | sort)\Zn" 0 0 2>&1 >/dev/tty
+	local EXITCODE="$?"
+        eval ${SETMODE}
+        if [[ "$EXITCODE" == 0 ]]; then
+		unset COMMAND
+		while [[ -z "$COMMAND" ]]
+			do
+			set +e
+			COMMAND=$(dialog --cr-wrap --colors --no-mouse --inputbox "Please, provide the command that should be used to rename the following FASTQ files (the first 20 are displayed):\n\Z2$(printf '%s\n' "${aFILES[@]}" | head -n 20)\Zn\nThe file name should meet these rules:\n\Zb\Z4Sample_name_\Zb\Z4L00[1-8]\Zn(Lane number)\Zb\Z4_R[1-2]\Zn(Read number)\Zb\Z4_RUNID\Zn(Capital letters and numbers only)\Zb\Z4.fastq.gz\Zn." 0 0 2>&1 >/dev/tty)
+#			eval ${SETMODE}
+			done
+		rm -rf ""$TMPDIR"/rename"
+		for OLDNAME in $(find "$ORIG_FASTQ_DIR" -type f -iregex ".*fastq\.gz" | awk -F "/" '{print $NF}')
+			do
+			NEWNAME=$(echo "$OLDNAME" | eval "$COMMAND")
+				RUN=$(echo "$NEWNAME" | awk -F "_" '{print $NF}' | awk '{ print $1}' FS=".") 
+                                NEWFASTQ_DIR=""$FASTQ_DIR"/"$RUN""
+				touch ""$TMPDIR"/rename"
+				echo "$NEWNAME" >> ""$TMPDIR"/rename"
+			done
+			if [[ -n $(find "$ORIG_FASTQ_DIR" | grep "$FASTQ_DIR" ) ]]; then
+			set +e
+			dialog --cr-wrap --colors --yesno "Files in the \Zb\Z4"$ORIG_FASTQ_DIR"\Zn folder will be renamed to (\Zb\Z2N=$(cat ""$TMPDIR"/rename"| sort -u| wc -l)\Zn):\n\Z2$(cat ""$TMPDIR"/rename" | sort -u)\Zn\nDo you want to continue?" 0 0 2>&1 >/dev/tty
+			local EXITCODE="$?"
+			eval ${SETMODE}
+			else
+			set +e
+			dialog --cr-wrap --colors --yesno "Files in the \Zb\Z4"$ORIG_FASTQ_DIR" \Znwill be copied to the \Zb\Z4"$NEWFASTQ_DIR"\Zn folder and renamed to:\n\Z2$(cat ""$TMPDIR"/rename")\Zn\nDo you want to continue?" 0 0 2>&1 >/dev/tty
+			local EXITCODE="$?"
+			eval ${SETMODE}
+			fi
+			if [[ "$EXITCODE" == 0 ]]; then
+				if [[ -d "$NEWFASTQ_DIR" ]]; then
+				set +e
+				dialog --colors --defaultno --yesno "\Zb\Z1It seems that the \Z4"$NEWFASTQ_DIR"\Z1 folder already exists!!!\nDo you want to copy the FASTQ files to it?" 0 0 2>&1 >/dev/tty
+				local EXITCODE="$?"
+        			eval ${SETMODE}
+        				if [[ "$EXITCODE" == 0 ]]; then
+						f_copy_rename
+					else
+					dialog --sleep 3 --colors --infobox "FASTQ files in the \Zb\Z4"$ORIG_FASTQ_DIR"\Zn folder have not been changed." 0 0 2>&1 >/dev/tty
+					fi
+				else
+					f_copy_rename	
+				fi
+			else
+				dialog --sleep 3 --colors --infobox "FASTQ files in the \Zb\Z4"$ORIG_FASTQ_DIR"\Zn folder have not been changed." 0 0 2>&1 >/dev/tty
+			fi
+		
+	else
+		NAME_CORRECT="yes"
+	fi
+	if [[ -e ""$TMPDIR"/newfastq_dir" ]]; then
+		ORIG_FASTQ_DIR=$(cat "$TMPDIR"/newfastq_dir)
+		rm -rf "$TMPDIR"/newfastq_dir
+	fi
+	done
+	wait
+aNAMES=($(ls -A "$ORIG_FASTQ_DIR" | awk -F. /.*fastq\.gz/'{print$(NF-2)}' | awk -F_ '{print$NF}' | sort | uniq | sed -ne 's/\(.*\)/\1 on/p'))
+set +e
+aCMD=(dialog --no-items --colors --checklist "In the \Zb\Z4"$ORIG_FASTQ_DIR"\Zn directory runs with the following IDs have been found.\nWhich of them should have the FASTQ files merged?" 0 0 0) 2>&1 >/dev/tty
+aCHOICES=($("${aCMD[@]}" "${aNAMES[@]}" 2>&1 >/dev/tty))
+eval ${SETMODE}
+	if [[ -z $(echo "${aCHOICES[@]}") ]]; then
+	dialog --colors --msgbox "There is nothing to do." 0 0 2>&1 >/dev/tty
+	touch ""$TMPDIR"/job_error."$RUN""
+	return 1
+	fi
+for CHOICE in "${aCHOICES[@]}"
+	do
+		if [[ -d ""$WORK_DIR"/RUNS/"$CHOICE"/FASTQ" ]] && [[ -n $(ls -A ""$WORK_DIR"/RUNS/"$CHOICE"/FASTQ") ]]; then
+		set +e
+                dialog --colors --defaultno --yesno "\Zb\Z1It seems that the FASTQ files have already been merged!!!\nRun ID: \Z4"$CHOICE"\Z1\nDo you want to replace them?" 0 0 2>&1 >/dev/tty
+			local EXITCODE="$?"
+        		eval ${SETMODE}
+        		if [[ "$EXITCODE" == 0 ]]; then
+			touch ""$TMPDIR"/merge_"$CHOICE""
+			fi
+		
+		else
+		touch ""$TMPDIR"/merge_"$CHOICE""
+		fi
+	done
+	wait
+f_merge_exec
+}
+function f_copy_rename {
+SAMPLESN=($(ls -A "$ORIG_FASTQ_DIR" | wc -l))
+f_threads "$SAMPLESN"
+COUNTER=0
+for OLDNAME in $(find "$ORIG_FASTQ_DIR" -type f -iregex ".*fastq\.gz" | awk -F "/" '{print $NF}')
+	do
+		set +e
+		let COUNTER++
+		eval ${SETMODE}
+	(
+	NEWNAME=$(echo "$OLDNAME" | eval "$COMMAND")
+			if [[ -n $(find "$ORIG_FASTQ_DIR" | grep "$FASTQ_DIR") ]]; then
+			echo "$(echo "print(int(round("$COUNTER"./"$SAMPLESN"*100,0)))" | python)" | dialog --colors --gauge "FASTQ files in the \Zb\Z4"$ORIG_FASTQ_DIR"\Zn folder are being renamed...\nFile \Zb\Z4"$(($COUNTER))"\Zn of \Zb\Z4"$SAMPLESN"\Zn." 9 70 0 2>&1 >/dev/tty
+			mkdir -p "$NEWFASTQ_DIR"
+			mv ""$ORIG_FASTQ_DIR"/"$OLDNAME"" ""$NEWFASTQ_DIR"/"$NEWNAME"" >> ""$WORK_DIR"/"$APPNAME".log" 2>&1 &
+			wait
+			echo "$NEWFASTQ_DIR" > ""$TMPDIR"/newfastq_dir"
+			else
+			echo "$(echo "print(int(round("$COUNTER"./"$SAMPLESN"*100,0)))" | python)" | dialog --colors --gauge "FASTQ files in the \Zb\Z4"$ORIG_FASTQ_DIR"\Zn folder are being renamed and copied to the \Zb\Z4"$NEWFASTQ_DIR"\Zn folder...\nFile \Zb\Z4"$(($COUNTER))"\Zn of \Zb\Z4"$SAMPLESN"\Zn." 9 70 0 2>&1 >/dev/tty	
+			mkdir -p "$NEWFASTQ_DIR"
+			cp -nR ""$ORIG_FASTQ_DIR"/"$OLDNAME"" ""$NEWFASTQ_DIR"/"$NEWNAME"" >> ""$WORK_DIR"/"$APPNAME".log" 2>>$WORK_DIR/ERRORS.log &
+			wait
+			echo "$NEWFASTQ_DIR" > ""$TMPDIR"/newfastq_dir"
+			fi
+	wait
+	) &
+	f_parallel --sleep=0
+	done
+	wait
+	if [[ -n $(find "$ORIG_FASTQ_DIR" | grep "$FASTQ_DIR") ]] && [[ "$ORIG_FASTQ_DIR" != "$NEWFASTQ_DIR" ]]; then
+		rmdir --ignore-fail-on-non-empty "$ORIG_FASTQ_DIR"
+	fi
+
+dialog --sleep 3 --colors --infobox "FASTQ files in the \Zb\Z4"$ORIG_FASTQ_DIR"\Zn folder have been renamed successfully." 0 0 2>&1 >/dev/tty
+}
+function f_merge_exec {
+aSAMPLES=($(ls -A "$ORIG_FASTQ_DIR" | awk 'NF{NF-=3}1' FS='_' OFS='_' | sort | uniq))
+SAMPLESN=$(printf '%s\n' "${aSAMPLES[@]}" | wc -l)
+f_threads "$SAMPLESN"
+COUNTER=0
+for CHOICE in "${aCHOICES[@]}"
+do
+if [[ -e ""$TMPDIR"/merge_"$CHOICE"" ]]; then
+	if [[ -n $(cat ""$TMPDIR"/merge_"$CHOICE"") ]]; then
+	RUN=$(cat ""$TMPDIR"/merge_"$CHOICE"")
+	else
+	RUN=$CHOICE
+	fi
+rm -rf ""$WORK_DIR"/RUNS/"$RUN"/FASTQ/"
+mkdir -p ""$WORK_DIR"/RUNS/"$RUN"/FASTQ"
+	for i in $(find "$ORIG_FASTQ_DIR" -iregex ".*"$RUN"\.fastq.gz" | awk -F/ '{print$NF}' | awk 'NF{NF-=3}1' FS='_' OFS='_' | sort | uniq)
+	do
+		set +e
+		let COUNTER++
+        	eval ${SETMODE}
+	(
+	echo "$(echo "print(int(round("$COUNTER"./"$SAMPLESN"*100,0)))" | python)" | dialog --colors --gauge "The FASTQ files are being checked and merged...\nThe merged files will be stored in:\n\Zb\Z4"$WORK_DIR"/RUNS/"$RUN"/FASTQ\Zn directory.\nRun ID: \Zb\Z4"$RUN"\Zn\nSample: \Zb\Z2"$i"\Zn (\Zb\Z4"$(($COUNTER))"\Zn of \Zb\Z4"$SAMPLESN"\Zn)." 0 0 0 2>&1 >/dev/tty
+	touch ""$TMPDIR"/"$RUN"."$i".R1.integrity.check"
+	set +e
+	gzip -t $(find "$ORIG_FASTQ_DIR" -iregex ".*\/"$i"_L[0-9]+_R1_"$RUN".fastq.gz") >> ""$TMPDIR"/"$RUN"."$i".R1.integrity.check" 2>>$WORK_DIR/ERRORS.log
+	eval ${SETMODE}
+	if [[ "$?" == 0 ]]; then
+		rm ""$TMPDIR"/"$RUN"."$i".R1.integrity.check"
+		touch ""$TMPDIR"/"$RUN"."$i".R1.integrity.check"
+		if [[ $(find "$ORIG_FASTQ_DIR" -iregex ".*\/"$i"_L[0-9]+_R1_"$RUN".fastq.gz" | sort | uniq | wc -l) -gt 1 ]]; then
+		aFASTQS_R1=($(find "$ORIG_FASTQ_DIR" -iregex ".*\/"$i"_L[0-9]+_R1_"$RUN".fastq.gz" | sort | uniq))
+		zcat $(echo "${aFASTQS_R1[@]}") > "$WORK_DIR"/RUNS/"$RUN"/FASTQ/"$i"_R1_"$RUN"_merged.fastq &
+		wait
+		gzip "$WORK_DIR"/RUNS/"$RUN"/FASTQ/"$i"_R1_"$RUN"_merged.fastq &
+		else
+		cp -R $(find "$ORIG_FASTQ_DIR" -iregex ".*\/"$i"_L[0-9]+_R1_"$RUN".fastq.gz" | sort | uniq) "$WORK_DIR"/RUNS/"$RUN"/FASTQ/"$i"_R1_"$RUN"_merged.fastq.gz &
+		fi
+	fi
+	touch ""$TMPDIR"/"$RUN"."$i".R2.integrity.check"
+	set +e
+        gzip -t $(find "$ORIG_FASTQ_DIR" -iregex ".*\/"$i"_L[0-9]+_R2_"$RUN".fastq.gz") >> ""$TMPDIR"/"$RUN"."$i".R2.integrity.check" 2>>$WORK_DIR/ERRORS.log
+	eval ${SETMODE}
+        if [[ "$?" == 0 ]]; then
+		rm ""$TMPDIR"/"$RUN"."$i".R2.integrity.check"
+                touch ""$TMPDIR"/"$RUN"."$i".R2.integrity.check"
+		if [[ $(find "$ORIG_FASTQ_DIR" -iregex ".*\/"$i"_L[0-9]+_R2_"$RUN".fastq.gz" | sort | uniq | wc -l) -gt 1 ]]; then
+		aFASTQS_R2=($(find "$ORIG_FASTQ_DIR" -iregex ".*\/"$i"_L[0-9]+_R2_"$RUN".fastq.gz" | sort | uniq))
+		zcat $(echo "${aFASTQS_R2[@]}") > "$WORK_DIR"/RUNS/"$RUN"/FASTQ/"$i"_R2_"$RUN"_merged.fastq &
+		wait
+		gzip "$WORK_DIR"/RUNS/"$RUN"/FASTQ/"$i"_R2_"$RUN"_merged.fastq &
+		else
+		cp -R $(find "$ORIG_FASTQ_DIR" -iregex ".*\/"$i"_L[0-9]+_R2_"$RUN".fastq.gz" | sort | uniq) "$WORK_DIR"/RUNS/"$RUN"/FASTQ/"$i"_R2_"$RUN"_merged.fastq.gz &
+		fi
+	fi
+	wait
+	) &
+	f_parallel --sleep=0
+	done
+	wait
+		if [[ -z $(cat $(find "$TMPDIR" -iregex ".*"$RUN".*\.R[12]+\.integrity\.check")) ]]; then
+		dialog --sleep 3 --colors --infobox "\Zb\Z4$OPT\Zn was finished successfully without errors.\nRun ID: \Zb\Z4"$RUN"\Zn" 0 0 2>&1 >/dev/tty
+		rm -rf $(find "$TMPDIR" -iregex ".*"$RUN".*\.R[12]+\.integrity\.check")
+		else
+		dialog --cr-wrap --colors --msgbox "\Zb\Z4$OPT\Zn was finished with errors.\n\Z1\ZbThe following FASTQ files have not been processed due to their possible corruption. Please, download them again.\Zn\n\Z2$(cat $(find "$TMPDIR" -iregex ".*"$RUN".*\.R[12]+\.integrity\.check") | sed 's/gzip: \(.*\):\(.*\)/\1/g; /^$/d' | sort | uniq | awk -F "/" '{print $NF}')\Zn\n\ZbRun ID: \Zb\Z4"$RUN"\Zn" 0 0 2>&1 >/dev/tty
+		rm -rf $(find "$TMPDIR" -iregex ".*"$RUN".*\.R[12]+\.integrity\.check")
+		fi
+fi
+done
+wait
+dialog --sleep 3 --colors --infobox "\Zb\Z4$OPT\Zn is complete." 0 0 2>&1 >/dev/tty
+}
+function f_run_job() {
+# This function takes three arguments. First one is the type of the analysis that is to be perfomed. The second one is a type of files that are required for this job to run, the third is the name of a destination folder in the run directory, the fourth is a parameter: '--fastqc', '--mapping', '--comparison' '--trimmomatic' '--expression' '--exp.comparison' '--VEP', '--regression'. The fourth argument is used to modify the f_run_job behavior.
+unset RUN
+rm -rf ""$TMPDIR"/job_error."$RUN""
+rm -rf ""$TMPDIR"/runjob_"$1""*
+f_selection "[A-Z0-9]+" ""$WORK_DIR"/RUNS/"
+if [[ -z $(echo "${aCHOICES[@]}") ]]; then
+dialog --colors --msgbox "There is nothing to do." 0 0 2>&1 >/dev/tty
+touch ""$TMPDIR"/job_error."$RUN""
+return 1
+fi
+# FASTQC-specific block
+if [[ -n $(echo "$@" | egrep -o "\-\-fastqc") ]]; then
+
+for RUN in "${aCHOICES[@]}"
+do
+	if [[ ! -d ""$WORK_DIR"/RUNS/"$RUN"/FASTQ/" ]] && [[ ! -d ""$WORK_DIR"/RUNS/"$RUN"/FASTQ_TRIMMED/" ]]; then 
+	dialog --colors --msgbox "\Zb\Z1The required files (\Zb\Z4FASTQ\Z1) are missing.\Zn\nRun ID: \Zb\Z4"$RUN"\Zn\nPlease perform all necessary steps of the NGS analysis." 0 0 2>&1 >/dev/tty
+	continue
+	fi
+	if [[ -d ""$WORK_DIR"/RUNS/"$RUN"/FASTQ/FASTQC" ]] || [[ -d ""$WORK_DIR"/RUNS/"$RUN"/FASTQ_TRIMMED/FASTQC" ]]; then
+		set +e
+		dialog --colors --defaultno --yesno "\Zb\Z1It seems that the \Z4"$RUN"\Z1-related analysis has already been performed!!!\nDo you want to run it again?" 0 0 2>&1 >/dev/tty
+			local EXITCODE="$?"
+        		eval ${SETMODE}
+        		if [[ "$EXITCODE" == 0 ]]; then
+			touch ""$TMPDIR"/runjob_"$1"#"$RUN""
+		else
+			touch ""$TMPDIR"/runjob_"$1"#"$RUN""
+			continue
+		fi
+	else
+		touch ""$TMPDIR"/runjob_"$1"#"$RUN""
+	fi
+if [[ -d ""$WORK_DIR"/RUNS/"$RUN"/FASTQ_TRIMMED/" ]]; then
+		aTRIM_OPTS=(
+		"Original_FASTQ_files" on
+		"TRIMMOMATIC-trimmed_FASTQ_files" on
+		)
+		set +e
+		aCMD=(dialog --no-items --colors --checklist "Please, select the type of \Zb\Z4FASTQ files\Zn you want to use:\Zn\nRun ID: \Zb\Z4"$RUN"\Zn" 0 0 0)
+		aSELECTED_FASTQS=($("${aCMD[@]}" "${aTRIM_OPTS[@]}" 2>&1 >/dev/tty))
+		eval ${SETMODE}
+        	if [[ -z $(echo "${aSELECTED_FASTQS[@]}") ]]; then
+        		dialog --colors --msgbox "There is nothing to do." 0 0 2>&1 >/dev/tty
+        		touch ""$TMPDIR"/job_error."$RUN""
+        		return 1
+        	fi
+else
+	aSELECTED_FASTQS="Original_FASTQ_files"
+fi
+echo "FASTQS:"${aSELECTED_FASTQS[@]}"" > ""$TMPDIR"/runjob_"$1"#"$RUN""
+done
+wait
+fi
+# END FASTQC-specific block
+
+# TRIMMOMATIC-specific block
+if [[ -n $(echo "$@" | egrep -o "\-\-trimmomatic") ]]; then
+        for RUN in "${aCHOICES[@]}"
+        do
+        if [[ ! -d ""$WORK_DIR"/RUNS/"$RUN"/"$2"/" ]]; then
+        dialog --colors --msgbox "\Zb\Z1The required files (\Zb\Z4$2\Z1) are missing.\Zn\nRun ID: \Zb\Z4"$RUN"\Zn\nPlease perform all necessary steps of the NGS analysis." 0 0 2>&1 >/dev/tty
+        continue
+        fi
+                                                if [[ -d ""$WORK_DIR"/RUNS/"$RUN"/"$3"" ]]; then
+                                                set +e
+						dialog --colors --defaultno --yesno "\Zb\Z1It seems that the \Z4"$RUN"\Z1-related analysis has already been performed!!!\nDo you want to run it again?" 0 0 2>&1 >/dev/tty
+                                                local EXITCODE="$?"
+        					eval ${SETMODE}
+        					if [[ "$EXITCODE" == 0 ]]; then
+                                                                touch ""$TMPDIR"/runjob_"$1"#"$RUN""
+                                                                fi
+                                                
+                                                else
+                                                touch ""$TMPDIR"/runjob_"$1"#"$RUN""
+                                                fi
+f_selection_single  "^(Nextera|TruSeq).*\.fa$" ""$CONDAROOT"/share/trimmomatic/adapters"
+if [[ -z "$CHOICE" ]]; then
+dialog --sleep 3 --colors --infobox "The file containing the NGS adapters was not selected. Exiting." 0 0 2>&1 >/dev/tty
+return 1
+fi
+ADAPTER="$CHOICE"
+DEFAULT_PHREDSCORE=20
+set +e
+PHREDSCORE=$(dialog --colors --inputbox "Provide the limiting \Zb\Z2Phred quality score\Zn. Reads of poorer quality will be trimmed. The default value is \Zb\Z4"$DEFAULT_PHREDSCORE"\Zn\nRun ID: \Zb\Z4"$RUN"\Zn" 0 0 2>&1 >/dev/tty)
+eval ${SETMODE}
+        if [[ -z "$PHREDSCORE" ]] ; then
+        PHREDSCORE="$DEFAULT_PHREDSCORE"
+	elif [[ "$PHREDSCORE" -lt 0 ]] || [[ "$PHREDSCORE" -gt 40  ]] || [[ -z $(echo "$PHREDSCORE" | egrep "^[0-9]+$") ]]; then
+        dialog --colors --msgbox "\Zb\Z1The provided Phred quality score is incorrect. Exiting." 0 0 2>&1 >/dev/tty
+	return 1
+	fi
+DEFAULT_LENGTH=50	
+set +e
+LENGTH=$(dialog --colors --inputbox "Provide the limiting \Zb\Z2read length\Zn. Shorter reads will be deleted. The default value is \Zb\Z4"$DEFAULT_LENGTH"\Zn\nRun ID: \Zb\Z4"$RUN"\Zn" 0 0 2>&1 >/dev/tty)
+eval ${SETMODE}
+        if [[ -z "$LENGTH" ]] ; then
+        LENGTH="$DEFAULT_LENGTH"
+        elif [[ "$LENGTH" -lt 1 ]] || [[ "$LENGTH" -gt 300  ]] || [[ -z $(echo "$LENGTH" | egrep "^[0-9]+$") ]]; then
+        dialog --colors --msgbox "\Zb\Z1The provided read length is incorrect. Exiting." 0 0 2>&1 >/dev/tty
+        return 1
+        fi
+	echo "ADAPTER:"$ADAPTER"" > ""$TMPDIR"/runjob_"$1"#"$RUN""
+	echo "PHREDSCORE:"$PHREDSCORE"" >> ""$TMPDIR"/runjob_"$1"#"$RUN""
+	echo "LENGTH:"$LENGTH"" >> ""$TMPDIR"/runjob_"$1"#"$RUN""
+        done
+        wait
+fi
+# END TRIMMOMATIC-specific block
+# DNA/RNA MAPPING-specific block
+if [[ -n $(echo "$@" | egrep -o "\-\-mapping") ]]; then
+f_selection_single "\.fa\.gz" ""$WORK_DIR"/REFSEQS"
+	if [[ -z "$CHOICE" ]]; then
+	dialog --colors --msgbox "\Zb\Z1A necessary file was not selected.\nThe program is unable to complete the job." 0 0 2>&1 >/dev/tty
+	return 1
+	fi
+FASTA="$CHOICE"
+FASTA_DEC=$(echo "$FASTA" | awk 'NF{NF-=1}1' FS='.' OFS='.')
+f_selection_single "\.(gtf|gff)\.gz" ""$WORK_DIR"/REFSEQS"
+	if [[ -z "$CHOICE" ]]; then
+	dialog --colors --msgbox "\Zb\Z1A necessary file was not selected.\nThe program is unable to complete the job." 0 0 2>&1 >/dev/tty
+	return 1
+	fi
+GTF="$CHOICE"
+GTF_DEC=$(echo "$GTF" | awk 'NF{NF-=1}1' FS='.' OFS='.')
+GENOME=$(echo "$FASTA" | awk 'NF{NF-=2}1' FS='.' OFS='.')
+
+for RUN in "${aCHOICES[@]}"
+do
+	if [[ ! -d ""$WORK_DIR"/RUNS/"$RUN"/FASTQ/" ]] && [[ ! -d ""$WORK_DIR"/RUNS/"$RUN"/FASTQ_TRIMMED/" ]]; then 
+	dialog --colors --msgbox "\Zb\Z1The required files (\Zb\Z4FASTQ\Z1) are missing.\Zn\nRun ID: \Zb\Z4"$RUN"\Zn\nPlease perform all necessary steps of the NGS analysis." 0 0 2>&1 >/dev/tty
+	continue
+	fi
+	if [[ -d ""$WORK_DIR"/RUNS/"$RUN"/MAPPINGS/"$GENOME"" ]] || [[ -d ""$WORK_DIR"/RUNS/"$RUN"/MAPPINGS_TRIMMED/"$GENOME"" ]]; then
+		set +e
+		dialog --colors --defaultno --yesno "\Zb\Z1It seems that the \Z4"$RUN"\Z1-related analysis has already been performed!!!\nDo you want to run it again?\n\nALL DEPENDENT RESULTS WILL ALSO BE DELETED!!!\n" 0 0 2>&1 >/dev/tty
+		local EXITCODE="$?"
+        	eval ${SETMODE}
+        	if [[ "$EXITCODE" == 0 ]]; then
+			touch ""$TMPDIR"/runjob_"$1"#"$RUN""
+		else
+			touch ""$TMPDIR"/runjob_"$1"#"$RUN""
+			continue
+		fi
+	else
+		touch ""$TMPDIR"/runjob_"$1"#"$RUN""
+	fi
+if [[ -d ""$WORK_DIR"/RUNS/"$RUN"/FASTQ_TRIMMED/" ]]; then
+		aTRIM_OPTS=(
+		"Original_FASTQ_files" on
+		"TRIMMOMATIC-trimmed_FASTQ_files" on
+		)
+		set +e
+		aCMD=(dialog --no-items --colors --checklist "Please, select the type of \Zb\Z4FASTQ files\Zn you want to use:\Zn\nRun ID: \Zb\Z4"$RUN"\Zn" 0 0 0)
+		aSELECTED_FASTQS=($("${aCMD[@]}" "${aTRIM_OPTS[@]}" 2>&1 >/dev/tty))
+		eval ${SETMODE}
+        	if [[ -z $(echo "${aSELECTED_FASTQS[@]}") ]]; then
+        		dialog --colors --msgbox "There is nothing to do." 0 0 2>&1 >/dev/tty
+        		touch ""$TMPDIR"/job_error."$RUN""
+        		return 1
+        	fi
+else
+	aSELECTED_FASTQS="Original_FASTQ_files"
+fi
+echo "FASTQS:"${aSELECTED_FASTQS[@]}"" > ""$TMPDIR"/runjob_"$1"#"$RUN""
+aMAPPERS=(
+"HISAT2" on
+"STAR" on
+)
+set +e
+aCMD=(dialog --no-items --colors --checklist "Please, select the \Zb\Z4DNA/RNA mapping program\Zn you want to use:\Zn\nRun ID: \Zb\Z4"$RUN"\Zn" 0 0 0)
+aSELECTED_MAPPERS=($("${aCMD[@]}" "${aMAPPERS[@]}" 2>&1 >/dev/tty))
+eval ${SETMODE}
+	if [[ -z $(echo "${aSELECTED_MAPPERS[@]}") ]]; then
+	dialog --colors --msgbox "There is nothing to do." 0 0 2>&1 >/dev/tty
+	touch ""$TMPDIR"/job_error."$RUN""
+	return 1
+	fi
+echo "MAPPERS:"${aSELECTED_MAPPERS[@]}"" >> ""$TMPDIR"/runjob_"$1"#"$RUN""
+done
+wait
+fi
+# END of the DNA/RNA MAPPING-specific block
+# DNA/RNA MAPPING COMPARISON-specific block
+if [[ -n $(echo "$@" | egrep -o "\-\-comparison") ]]; then
+for RUN in ${aCHOICES[@]}
+do
+	if [[ -d ""$WORK_DIR"/RUNS/"$RUN"/MAPPINGS" ]] && [[ -d ""$WORK_DIR"/RUNS/"$RUN"/MAPPINGS_TRIMMED" ]]; then
+		aTRIM_OPTS=(
+		"Original_FASTQ_files" on
+		"TRIMMOMATIC-trimmed_FASTQ_files" on
+		)
+		set +e
+		aCMD=(dialog --no-items --colors --checklist "Please, select the type of \Zb\Z4FASTQ files\Zn you want to use:\Zn\nRun ID: \Zb\Z4"$RUN"\Zn" 0 0 0)
+		aSELECTED_FASTQS=($("${aCMD[@]}" "${aTRIM_OPTS[@]}" 2>&1 >/dev/tty))
+		eval ${SETMODE}
+			if [[ -z "$aSELECTED_FASTQS" ]]; then
+        		dialog --colors --msgbox "There is nothing to do." 0 0 2>&1 >/dev/tty
+        		touch ""$TMPDIR"/job_error."$RUN""
+        		return 1
+        		fi
+		touch ""$TMPDIR"/runjob_"$1"#"$RUN"_Original_FASTQ_files"
+		touch ""$TMPDIR"/runjob_"$1"#"$RUN"_TRIMMOMATIC-trimmed_FASTQ_files"
+	elif [[ ! -d ""$WORK_DIR"/RUNS/"$RUN"/MAPPINGS" ]] && [[ ! -d ""$WORK_DIR"/RUNS/"$RUN"/MAPPINGS_TRIMMED" ]]; then
+		dialog --colors --msgbox "\Zb\Z1FASTQ files in the \Z4"$RUN"\Z1 run were not mapped to the reference genome. Please, perform the mapping and try again." 0 0 2>&1 >/dev/tty
+                touch ""$TMPDIR"/job_error."$RUN""
+                return 1
+	elif [[ -d ""$WORK_DIR"/RUNS/"$RUN"/MAPPINGS_TRIMMED" ]]; then
+		aSELECTED_FASTQS="TRIMMOMATIC-trimmed_FASTQ_files"
+		touch ""$TMPDIR"/runjob_"$1"#"$RUN"_TRIMMOMATIC-trimmed_FASTQ_files"
+	else
+		aSELECTED_FASTQS="Original_FASTQ_files"
+		touch ""$TMPDIR"/runjob_"$1"#"$RUN"_Original_FASTQ_files"
+	fi
+	for FASTQ_TYPE in "${aSELECTED_FASTQS[@]}"
+	do
+	if [[ "$FASTQ_TYPE" == "Original_FASTQ_files"  ]]; then
+		MAPPINGS=MAPPINGS
+	elif [[ "$FASTQ_TYPE" == "TRIMMOMATIC-trimmed_FASTQ_files"  ]]; then
+		MAPPINGS=MAPPINGS_TRIMMED
+	fi
+		f_selection_single "[_.]+genom.*" ""$WORK_DIR"/RUNS/"$RUN"/"$MAPPINGS""
+        	if [[ -z "$CHOICE" ]]; then
+        		dialog --colors --msgbox "\Zb\Z1A necessary file was not selected.\nThe program is unable to complete the job." 0 0 2>&1 >/dev/tty
+        		return 1
+        	fi
+	GENOME="$CHOICE"
+	f_selection_single "\.(gtf|gff)\.gz" ""$WORK_DIR"/REFSEQS"
+        if [[ -z "$CHOICE" ]]; then
+        dialog --colors --msgbox "\Zb\Z1A necessary file was not selected.\nThe program is unable to complete the job." 0 0 2>&1 >/dev/tty
+        return 1
+        fi
+	GTF="$CHOICE"
+	GTF_DEC=$(echo "$GTF" | awk 'NF{NF-=1}1' FS='.' OFS='.')
+if [[ -d ""$WORK_DIR"/RUNS/"$RUN"/"$MAPPINGS"/"$GENOME"/COMPARISON" ]]; then
+	set +e
+	dialog --colors --defaultno --yesno "\Zb\Z1It seems that this comparison has already been performed!!!\Zn\nRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nDo you want to run it again?" 0 0 2>&1 >/dev/tty
+	local EXITCODE="$?"
+        eval ${SETMODE}
+        if [[ "$EXITCODE" != 0 ]]; then
+		touch ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+		break
+	fi
+fi
+		f_selection "(STAR|HISAT2)" ""$WORK_DIR"/RUNS/"$RUN"/"$MAPPINGS"/"$GENOME"" "--on" "--alt.name"
+        	if [[ -z $(echo "${aCHOICES_ALT[@]}") ]]; then
+        	dialog --colors --msgbox "There is nothing to do." 0 0 2>&1 >/dev/tty
+        	touch ""$TMPDIR"/job_error."$RUN""
+        	return 1
+        	fi
+		aSELECTED_MAPPERS=($(echo "${aCHOICES_ALT[@]}"))
+		aBAM_TYPES=(
+		"BAMs_w_dups" on
+		"BAMs_wo_dups" on
+		)
+		set +e
+		aCMD=(dialog --no-items --colors --checklist "Please, select the \Zb\Z4BAM file type\Zn you want to use:\nBAM files with duplicates (\Zb\Z2BAMs_w_dups\Zn) or BAM files without duplicates (\Zb\Z2BAMs_wo_dups\Zn)\nRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn" 0 0 0)
+
+		aSELECTED_BAMS=($("${aCMD[@]}" "${aBAM_TYPES[@]}" 2>&1 >/dev/tty))
+		eval ${SETMODE}
+        		if [[ -z $(echo "${aSELECTED_BAMS[@]}") ]]; then
+        		dialog --colors --msgbox "There is nothing to do." 0 0 2>&1 >/dev/tty
+        		touch ""$TMPDIR"/job_error."$RUN""
+        		return 1
+        		fi
+		BEDDIR=""$WORK_DIR"/BED_FILES"
+		mkdir -p "$BEDDIR"
+		set +e
+		aBEDFILES=($(dialog --no-items --colors --checklist "Please, select the BED file(s) for \Zb\Z4on-target sequencing assessment and/or BAM files subsetting.\Zn\nRun ID: \Zb\Z2"$RUN"\Zn" 0 0 0 2>&1 >/dev/tty $(find $BEDDIR -type f -iname "*.bed" | sort | sed 's/$/ off/')))
+		local EXITCODE="$?"
+		eval ${SETMODE}
+		if [[ "$EXITCODE" != 0 ]]; then
+			unset aBEDFILES
+		fi
+
+		if [[ ${#aBEDFILES[@]} -gt 1 ]]; then
+			BEDFILE=$(dialog --no-items --colors --menu "Which of the previously selected BED files should be used for \Zb\Z4on-target sequencing assessment\Zn.\nRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn" 0 0 0 "${aBEDFILES[@]}" 2>&1 >/dev/tty)
+		else
+			BEDFILE=${aBEDFILES[@]}
+		fi
+		if [[ -f "$BEDFILE" ]]; then
+			THRESHOLD=$(dialog --colors --inputbox "Provide the \Zb\Z4sequencing read coverage depth threshold\Zn for identification of unsatisfactorily enriched gene regions (\Zb\Z2default: 5\Zn).\nRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn" 0 0 2>&1 >/dev/tty)
+			if [[ -z "$THRESHOLD" ]]; then
+				THRESHOLD=5
+			fi
+
+			SDTIMES=$(dialog --colors --inputbox "Provide the \Zb\Z4number of standard devations\Zn to be subtracted from each mean sequencing read coverage depth value to get a minimal read coverage depth value (\Zb\Z2default: 0\Zn).\nRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn" 0 0 2>&1 >/dev/tty)
+			if [[ -z "$SDTIMES" ]]; then
+				SDTIMES=0
+			fi
+		fi
+
+		if [[ ${#aBEDFILES[@]} -gt 0 ]]; then
+		set +e
+		dialog --colors --defaultno --yesno "Do you want to make\Zb\Z4 subsets\Zn of the bam files containing only the reads overlapping all the selected BED files:\n\Zb\Z2'$(echo ${aBEDFILES[@]} | sed 's/ /\n/g')'\Zn?" 0 0 2>&1 >/dev/tty
+		local EXITCODE="$?"
+        	eval ${SETMODE}
+        		if [[ "$EXITCODE" == 0 ]]; then
+				SUBSET="yes"
+			else
+				SUBSET="no"
+			fi
+		fi
+
+				touch ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+				echo "MAPPERS:"${aSELECTED_MAPPERS[@]}"" > ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+                		echo "BAMS:"${aSELECTED_BAMS[@]}"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+				echo "FASTQS:"${aSELECTED_FASTQS[@]}"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+				echo "aBEDFILES:"${aBEDFILES[@]}"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+				echo "BEDFILE:"$BEDFILE"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+				echo "THRESHOLD:"$THRESHOLD"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+				echo "SDTIMES:"$SDTIMES"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+				echo "SUBSET:"$SUBSET"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+	done
+	wait
+done
+wait
+fi
+# END of the DNA/RNA MAPPING COMPARISON-specific block
+# Gene expression-specific block
+if [[ -n $(echo "$@" | egrep -o "\-\-expression") ]]; then
+for RUN in "${aCHOICES[@]}"
+do
+	set +e
+	dialog --colors --defaultno --yesno "Are the NGS libraries used in this experiment \Zb\Z4strand-specific\Zn? If unsure, set this value to \Zb\Z2"NO"\Zn.\nRun ID: \Zb\Z4"$RUN"\Zn" 0 0 2>&1 >/dev/tty
+	local EXITCODE="$?"
+        eval ${SETMODE}
+        if [[ "$EXITCODE" == 0 ]]; then
+		STRANDSPEC="yes"
+	else
+		STRANDSPEC="no"
+	fi
+
+	DEFAULT_ALPHA=0.05
+	set +e
+	ALPHA=$(dialog --colors --inputbox "Provide the \Zb\Z2statistical significance level (alpha)\Zn for the \Zb\Z4DESeq2/edgeR differential exression analysis\Zn. The default alpha is \Zb\Z4"$DEFAULT_ALPHA"\Zn.\nRun ID: \Zb\Z4"$RUN"\Zn" 0 0 2>&1 >/dev/tty)
+	eval ${SETMODE}
+        if [[ -z "$ALPHA" ]] ; then
+        ALPHA="$DEFAULT_ALPHA"
+        elif [[ -z $(echo "$ALPHA" | egrep "^[0-9]{1}(\.|)[0-9]{0,}$") ]]; then
+        dialog --colors --msgbox "\Zb\Z1The provided value is incorrect. Exiting." 0 0 2>&1 >/dev/tty
+        return 1
+        fi
+
+	DEFAULT_FC=1
+	set +e
+	FC=$(dialog --colors --inputbox "Provide the \Zb\Z2fold change threshold (FC)\Zn for the \Zb\Z4DESeq2/edgeR differential exression analysis\Zn. The default FC is \Zb\Z4"$DEFAULT_FC"\Zn.\nRun ID: \Zb\Z4"$RUN"\Zn" 0 0 2>&1 >/dev/tty)
+	eval ${SETMODE}
+        if [[ -z "$FC" ]] ; then
+        FC="$DEFAULT_FC"
+        elif [[ -z $(echo "$FC" | egrep "^[0-9]{1}(\.|)[0-9]{0,}$") ]]; then
+        dialog --colors --msgbox "\Zb\Z1The provided value is incorrect. Exiting." 0 0 2>&1 >/dev/tty
+        return 1
+        fi
+	DEFAULT_FILTERFUN='pOverA(0.20,log2(100));function(x)(IQR(x)>0.25)'
+	set +e
+	FILTERFUN=$(dialog --colors --no-mouse --inputbox "Provide the \Zb\Z2filtering functions\Zn for the \Zb\Z4 DESEQ2 app\Zn (EDGER uses its own default filtering function).\nFunctions should be separated with a \Zb\Z4semicolon (;)\Zn. Maximum 3 functions are allowed. The default value is:\n\Zb\Z4'${DEFAULT_FILTERFUN}'\Zn.\nChoose '\Zb\Z4Cancel\Zn' to omit the filtering step.\nRun ID: \Zb\Z4"$RUN"\Zn" 0 0 2>&1 >/dev/tty)
+	if [[ "$?" != 0 ]]; then
+	FILTERFUN="UNFILTERED"
+        elif [[ -z "${FILTERFUN}" ]] ; then
+        FILTERFUN="${DEFAULT_FILTERFUN}"
+	fi
+	eval ${SETMODE}
+	FILTERFUN=$(echo "$FILTERFUN" | sed 's/ //g')
+	if [[ -d ""$WORK_DIR"/RUNS/"$RUN"/MAPPINGS" ]] && [[ -d ""$WORK_DIR"/RUNS/"$RUN"/MAPPINGS_TRIMMED" ]]; then
+		aTRIM_OPTS=(
+		"Original_FASTQ_files" on
+		"TRIMMOMATIC-trimmed_FASTQ_files" on
+		)
+		set +e
+		aCMD=(dialog --no-items --colors --checklist "Please, select the type of \Zb\Z4FASTQ files\Zn you want to use:\Zn\nRun ID: \Zb\Z4"$RUN"\Zn" 0 0 0)
+		aSELECTED_FASTQS=($("${aCMD[@]}" "${aTRIM_OPTS[@]}" 2>&1 >/dev/tty))
+		eval ${SETMODE}
+			if [[ -z "$aSELECTED_FASTQS" ]]; then
+        		dialog --colors --msgbox "There is nothing to do." 0 0 2>&1 >/dev/tty
+        		touch ""$TMPDIR"/job_error."$RUN""
+        		return 1
+        		fi
+		touch ""$TMPDIR"/runjob_"$1"#"$RUN"_Original_FASTQ_files"
+		touch ""$TMPDIR"/runjob_"$1"#"$RUN"_TRIMMOMATIC-trimmed_FASTQ_files"
+	elif [[ ! -d ""$WORK_DIR"/RUNS/"$RUN"/MAPPINGS" ]] && [[ ! -d ""$WORK_DIR"/RUNS/"$RUN"/MAPPINGS_TRIMMED" ]]; then
+		dialog --colors --msgbox "\Zb\Z1FASTQ files in the \Z4"$RUN"\Z1 run were not mapped to the reference genome. Please, perform the mapping and try again." 0 0 2>&1 >/dev/tty
+                touch ""$TMPDIR"/job_error."$RUN""
+                return 1
+	elif [[ -d ""$WORK_DIR"/RUNS/"$RUN"/MAPPINGS_TRIMMED" ]]; then
+		aSELECTED_FASTQS="TRIMMOMATIC-trimmed_FASTQ_files"
+		touch ""$TMPDIR"/runjob_"$1"#"$RUN"_TRIMMOMATIC-trimmed_FASTQ_files"
+	else
+		aSELECTED_FASTQS="Original_FASTQ_files"
+		touch ""$TMPDIR"/runjob_"$1"#"$RUN"_Original_FASTQ_files"
+	fi
+	for FASTQ_TYPE in "${aSELECTED_FASTQS[@]}"
+	do
+	if [[ "$FASTQ_TYPE" == "Original_FASTQ_files"  ]]; then
+		MAPPINGS=MAPPINGS
+	elif [[ "$FASTQ_TYPE" == "TRIMMOMATIC-trimmed_FASTQ_files"  ]]; then
+		MAPPINGS=MAPPINGS_TRIMMED
+	fi
+		f_selection_single "[_.]+genom.*" ""$WORK_DIR"/RUNS/"$RUN"/"$MAPPINGS""
+        	if [[ -z "$CHOICE" ]]; then
+        		dialog --colors --msgbox "\Zb\Z1A necessary file was not selected.\nThe program is unable to complete the job." 0 0 2>&1 >/dev/tty
+        		return 1
+        	fi
+	GENOME="$CHOICE"
+	f_selection_single "\.(gtf|gff)\.gz" ""$WORK_DIR"/REFSEQS"
+        if [[ -z "$CHOICE" ]]; then
+        dialog --colors --msgbox "\Zb\Z1A necessary file was not selected.\nThe program is unable to complete the job." 0 0 2>&1 >/dev/tty
+        return 1
+        fi
+	GTF="$CHOICE"
+	GTF_DEC=$(echo "$GTF" | awk 'NF{NF-=1}1' FS='.' OFS='.')
+	CSVDIR=""$WORK_DIR"/CSV_FILES"
+	mkdir -p "$CSVDIR"
+	f_selection_single "\.(csv|CSV)$" "$CSVDIR"
+        if [[ -z "$CHOICE" ]]; then
+        dialog --colors --msgbox "\Zb\Z1A necessary file was not selected.\nThe program is unable to complete the job." 0 0 2>&1 >/dev/tty
+        return 1
+        fi
+        CSVFILE="$CHOICE"
+	cat "$CSVDIR"/"$CSVFILE" | sed 's/"//g' | sed -n '1p' | sed  's/;/\n/g' |R --slave --no-restore --no-save --file="$(which validate.names.r)" | sed 's/ /;/g; s/$/\n/' | cat - "$CSVDIR"/"$CSVFILE" | sed '2d' > ""$CSVDIR"/"$CSVFILE".tmp" && mv ""$CSVDIR"/"$CSVFILE".tmp" ""$CSVDIR"/"$CSVFILE""
+	aCSV_COLUMNS=($(sed -ne '1p' "$CSVDIR"/"$CSVFILE" | sed 's/;/\n/g'))
+	aCSV_COLUMNSN=($(sed -ne '1p' "$CSVDIR"/"$CSVFILE" | sed 's/;/\n/g' | sed 's/$/ off/'))
+	set +e
+	SAMPLE_COLUMN=$(dialog --no-items --colors --menu "Please, select the column that contains \Zb\Z4unique sample names\Zn.\nRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nCSV file:\n\Zb\Z4"$CSVDIR"/"$CSVFILE"\Zn" 0 0 0 "${aCSV_COLUMNS[@]}" 2>&1 >/dev/tty)
+	eval ${SETMODE}
+	csvcut -d ';' -c "$SAMPLE_COLUMN" "$CSVDIR"/"$CSVFILE" | sed '1d' > ""$TMPDIR"/csv_samples"
+	SAMPLENAMESN=$(cat ""$TMPDIR"/csv_samples" | wc -l)
+	USAMPLENAMESN=$(cat ""$TMPDIR"/csv_samples" | sort -u | wc -l)
+	if [[ $SAMPLENAMESN != $USAMPLENAMESN ]]; then
+		dialog --colors --msgbox "\Zb\Z1The selected variable does not contain unique sample names. Please, correct this error." 0 0 2>&1 >/dev/tty
+		#return 1
+		touch ""$TMPDIR"/job_error."$RUN""
+		continue
+	fi
+
+	if [[ -n $(find ""$WORK_DIR"/RUNS/"$RUN"/FASTQ" -type f -regex ".*_R[1-2].*\.fastq\.gz$") ]];then
+		aSAMPLENAMES=($(find ""$WORK_DIR"/RUNS/"$RUN"/FASTQ" -maxdepth 1 -type f -regex ".*_R[1-2].*\.fastq\.gz$" | awk -F "/" '{print $NF}' | sed -e 's/_R[1-2]\{1\}.*\.fastq\.gz$//' | sort -u))
+	else
+		dialog --colors --msgbox "\Zb\Z1No sample names were found in the \Z2""$WORK_DIR"/RUNS/"$RUN"/FASTQ"\Z1 folder. Please, check and correct this issue." 0 0 2>&1 >/dev/tty
+		continue
+	fi
+	rm -rf ""$TMPDIR"/missing_csvs"
+	touch ""$TMPDIR"/missing_csvs"
+		for SAMPLE in "${aSAMPLENAMES[@]}"
+		do
+		if [[ -z $(egrep "^"$SAMPLE"$" ""$TMPDIR"/csv_samples") ]]; then
+                	echo "$SAMPLE" >> ""$TMPDIR"/missing_csvs"
+        	fi
+		done
+
+	if [[ -n $(cat ""$TMPDIR"/missing_csvs") ]]; then
+        set +e
+	dialog --colors --defaultno --yesno "\Zb\Z1The following samples are missing in your CSV file:\Zn\n$(cat "$TMPDIR/missing_csvs" | sort -u | xargs | sed 's/ /, /g').\n\n\Zb\Z4Do you want to proceed with the analysis anyway?\Zn" 0 0 2>&1 >/dev/tty
+	local EXITCODE="$?"
+	eval ${SETMODE}
+
+		if [[ "$EXITCODE" -eq 1 ]]; then
+		touch ""$TMPDIR"/job_error."$RUN""
+		continue
+		fi
+	fi
+
+	set +e
+	dialog --colors --defaultno --yesno "Are the samples in the \Zb\Z2$RUN\Zn RUN paired?\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nCSV file:\n\Zb\Z4"$CSVDIR"/"$CSVFILE"\Zn" 0 0 2>&1 >/dev/tty
+	local EXITCODE="$?"
+	eval ${SETMODE}
+
+	if [[ "$EXITCODE" == 0 ]]; then
+		PAIRED_SAMPLES="TRUE"
+	else	
+		PAIRED_SAMPLES="FALSE"
+	fi
+
+	if [[  $PAIRED_SAMPLES == "TRUE" ]]; then
+		set +e
+		PAIRS_COLUMN=$(dialog --no-items --colors --menu "Please, select the column that contains \Zb\Z4pair identifiers\Zn.\nRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nCSV file:\n\Zb\Z4"$CSVDIR"/"$CSVFILE"\Zn" 0 0 0 "${aCSV_COLUMNS[@]}" 2>&1 >/dev/tty)
+		eval ${SETMODE}
+		aPAIRS=($(csvcut -d ';' -c "$PAIRS_COLUMN" "$CSVDIR"/"$CSVFILE" | sed '1d' | sort -u))
+		MODULORES=$(echo "print($SAMPLENAMESN%${#aPAIRS[@]})" | python)
+	
+		if [[ ! $MODULORES -eq 0 ]]; then
+			set +e
+			dialog --colors --defaultno --yesno "\Zb\Z1The selected variable seems to be an incorrect pair identifier, since the number of its values does not divide by the number of samples without a rest. Do you want to proceed with the analysis anyway?" 0 0 2>&1 >/dev/tty
+			local EXITCODE="$?"
+			eval ${SETMODE}
+
+			if [[ "$EXITCODE" -eq 1 ]]; then
+				touch ""$TMPDIR"/job_error."$RUN""
+				continue
+			fi
+		fi
+	else
+		PAIRS_COLUMN=NA
+	fi
+
+	unset GROUPING_SEL
+	until [[ "$GROUPING_SEL" == 1 ]]
+	do 
+	set +e
+	GROUPING_VARS=($(dialog --no-items --colors --checklist "Please, select\Zb\Z4 zero, one or two grouping variables\Zn you want to use in the expression analysis.\Z2\Zb If no selection is made, the entire group of samples will be selected\Zn.\nRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nCSV file:\n\Zb\Z4"$CSVDIR"/"$CSVFILE"\Zn" 0 0 0 "${aCSV_COLUMNSN[@]}" 2>&1 >/dev/tty | sed 's/ /,/g'))
+	eval ${SETMODE}
+		if [[ -z "$GROUPING_VARS" ]]; then
+		GROUPING_VARS=ALL_SAMPLES
+		fi
+	echo "GROUPING_COLUMN:"$GROUPING_VARS"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+	set +e
+	dialog --colors --defaultno --yesno "Do you want to select another set of \Zb\Z4grouping variables\Zn?\nRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nCSV file:\n\Zb\Z4"$CSVDIR"/"$CSVFILE"\Zn" 0 0 2>&1 >/dev/tty
+	local EXITCODE="$?"
+        eval ${SETMODE}
+	GROUPING_SEL="$EXITCODE"
+	done 
+	unset FACTOR_SEL
+	until [[ "$FACTOR_SEL" == 1 ]]
+	do
+	set +e
+	aFACTOR_COLUMNS=($(dialog --no-items --colors --checklist "Please, select \Zb\Z4one or two independent factor variables\Zn you want to use in the expression analysis:\nRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nCSV file:\n\Zb\Z4"$CSVDIR"/"$CSVFILE"\Zn" 0 0 0 "${aCSV_COLUMNSN[@]}" 2>&1 >/dev/tty))
+	eval ${SETMODE}
+        if [[ -z $(echo "${aFACTOR_COLUMNS[@]}") ]]; then
+        dialog --colors --msgbox "There is nothing to do." 0 0 2>&1 >/dev/tty
+        touch ""$TMPDIR"/job_error."$RUN""
+        return 1
+        fi
+	echo "FACTOR_COLUMNS:"${aFACTOR_COLUMNS[@]}"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+	set +e
+	dialog --colors --defaultno --yesno "Do you want to select another set of \Zb\Z4independent factor variables\Zn?\nRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nCSV file:\n\Zb\Z4"$CSVDIR"/"$CSVFILE"\Zn" 0 0 2>&1 >/dev/tty
+	local EXITCODE="$?"
+	eval ${SETMODE}
+	FACTOR_SEL="$EXITCODE"
+	done
+	
+	aFACTORS=($(awk -F ":" '/FACTOR_COLUMNS:/ {print $2}' ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE"" | tr "\n" " " | tr " " "\n" | sort -u | tr "\n" " "))
+
+	COMPARISON_SEL="no"
+	until [[ $COMPARISON_SEL == "yes" ]]
+	do
+	set +e
+	COMPARISONS=$(dialog --colors --no-mouse --inputbox "Provide the \Zb\Z2list of comparisons\Zn to be performed in the differential expression analysis. The input values, separated with a semicolon (;),  should be constructed as follows: \Zb\Z4dependent variable name:tested level:reference level\Zn. The levels of the selected factor variables are:\n\n\Z2$(csvcut -d ";" -c $(echo ${aFACTORS[@]} | xargs printf '%s,' | sed 's/,$//') "$CSVDIR"/"$CSVFILE" | list.factor.levels.r)\Zn\n\nRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nCSV file:\n\Zb\Z4"$CSVDIR"/"$CSVFILE"\Zn" 0 0 2>&1 >/dev/tty)
+	eval ${SETMODE}
+
+        if [[ -n "${COMPARISONS}" ]] ; then
+        COMPARISON_SEL="yes"
+	else
+        dialog --colors --msgbox "\Zb\Z1The list of comparisons was not provided. Please, try again." 0 0 2>&1 >/dev/tty
+        fi
+	done
+
+	TXTDIR=""$WORK_DIR"/TXT_FILES"
+	mkdir -p "$TXTDIR"
+		set +e
+		TXTFILE=$(dialog --colors --title "Select the file containing one gene per line to evaluate the gene signature. Choose: \Zb\Z4'Cancel'\Zn to omit this step; Run ID: "$RUN"" --fselect ""$TXTDIR"/" 10 0 0 2>&1 >/dev/tty)
+		local EXITCODE="$?"
+		eval ${SETMODE}
+		if [[ "$EXITCODE" == 0 ]]; then
+			if [[ ! -f "$TXTFILE" ]] ; then
+        		dialog --colors --msgbox "\Zb\Z1The file \Z4"$TXTFILE"\Z1 does not exist." 0 0 2>&1 >/dev/tty
+                	touch ""$TMPDIR"/job_error."$RUN""
+                	return 1
+        		fi
+		else
+			TXTFILE="NA"
+		fi
+		echo "TXTFILE:"$TXTFILE"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+
+		f_selection "(STAR|HISAT2)" ""$WORK_DIR"/RUNS/"$RUN"/"$MAPPINGS"/"$GENOME"" "--on" "--alt.name"
+        	if [[ -z $(echo "${aCHOICES_ALT[@]}") ]]; then
+        	dialog --colors --msgbox "There is nothing to do." 0 0 2>&1 >/dev/tty
+        	touch ""$TMPDIR"/job_error."$RUN""
+        	return 1
+        	fi
+		aSELECTED_MAPPERS=($(echo "${aCHOICES_ALT[@]}"))
+
+					aEXP_TYPES=(
+					"DESEQ2" on
+					"EDGER" on
+					)
+					set +e
+					aCMD=(dialog --no-items --colors --checklist "Please, select the \Zb\Z4expression analysis app\Zn you want to use:\Zn\nRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn" 0 0 0)
+					aSELECTED_EXP=($("${aCMD[@]}" "${aEXP_TYPES[@]}" 2>&1 >/dev/tty))
+					eval ${SETMODE}
+        				if [[ -z $(echo "${aSELECTED_EXP[@]}") ]]; then
+        					dialog --colors --msgbox "There is nothing to do." 0 0 2>&1 >/dev/tty
+        					touch ""$TMPDIR"/job_error."$RUN""
+        					return 1
+					fi
+					aBAM_TYPES=(
+					"BAMs_w_dups" on
+					"BAMs_wo_dups" on
+					)
+					set +e
+					aCMD=(dialog --no-items --colors --checklist "Please, select the \Zb\Z4BAM file type\Zn you want to use:\nBAM files with duplicates (\Zb\Z2BAMs_w_dups\Zn) or BAM files without duplicates (\Zb\Z2BAMs_wo_dups\Zn)\nRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn" 0 0 0)
+
+					aSELECTED_BAMS=($("${aCMD[@]}" "${aBAM_TYPES[@]}" 2>&1 >/dev/tty))
+					eval ${SETMODE}
+        				if [[ -z $(echo "${aSELECTED_BAMS[@]}") ]]; then
+        					dialog --colors --msgbox "There is nothing to do." 0 0 2>&1 >/dev/tty
+        					touch ""$TMPDIR"/job_error."$RUN""
+        					return 1
+        				fi
+
+			if [[ -n $(find ""$WORK_DIR"/RUNS/"$RUN"/"$MAPPINGS"/"$GENOME"" -name "EXPRESSION") ]]; then
+				set +e
+				dialog --colors --defaultno --yesno "\Zb\Z1It seems that this expression analysis has already been performed!!!\Zn\nRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nDo you want to run it again?" 0 0 2>&1 >/dev/tty
+				local EXITCODE="$?"
+        			eval ${SETMODE}
+        			if [[ "$EXITCODE" != 0 ]]; then
+					SUBSET_DIRS=($(find ""$WORK_DIR"/RUNS/"$RUN"/"$MAPPINGS"/"$GENOME"" -iregex ".*$(echo ${aSELECTED_MAPPERS[@]} | sed 's/^/\\(/; s/$/\\)/; s/ /\\|/').*bed\.subset$" -type d))
+					if [[ -z "${SUBSET_DIRS[@]}" ]]; then
+						touch ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE"_"$MAPPER""
+						break
+					else
+						EXPFULL="no"
+					fi
+				fi
+			fi
+					SUBSET_DIRS=($(find ""$WORK_DIR"/RUNS/"$RUN"/"$MAPPINGS"/"$GENOME"" -iregex ".*$(echo ${aSELECTED_MAPPERS[@]} | sed 's/^/\\(/; s/$/\\)/; s/ /\\|/').*bed\.subset$" -type d))
+					if [[ -n "${SUBSET_DIRS[@]}" ]]; then
+					SUBSET_DIRS_ABBS=($(echo "${SUBSET_DIRS[@]}" | xargs printf '%s\n' | awk -F "/" '{print $(NF-1), $NF}' OFS="/" | sed 's/$/ on/'))
+					
+					set +e
+					aCMD=(dialog --no-items --colors --checklist "Please, select the \Zb\Z4folder(s) with BAM subsets\Zn you want to use:\nRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn" 0 0 0)
+
+					aSELECTED_BAM_SUBSETS=($("${aCMD[@]}" "${SUBSET_DIRS_ABBS[@]}" 2>&1 >/dev/tty))
+					eval ${SETMODE}
+					fi
+
+					set +e
+					dialog --colors --yesno "Do you want to adjust p-values for multiple comparisons (using the \Zb\Z4FDR\Zn correction) in the TOST analysis of gene expression equivalence?\Zn\n\nRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn" 0 0 2>&1 >/dev/tty
+					local EXITCODE="$?"
+        				eval ${SETMODE}
+					if [[ $EXITCODE -eq 0 ]]; then
+						FDR="TRUE"
+					else
+						FDR="FALSE"
+					fi
+
+					touch ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+					echo "GENOME:"$GENOME"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+					echo "GTF:"$GTF"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+					echo "MAPPERS:"${aSELECTED_MAPPERS[@]}"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+					echo "EXP_TYPE:"${aSELECTED_EXP[@]}"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+                			echo "BAMS:"${aSELECTED_BAMS[@]}"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+					echo "FASTQS:"${aSELECTED_FASTQS[@]}"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+					echo "CSVFILE:"$CSVDIR"/"$CSVFILE"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+					echo "SAMPLE_COLUMN:"$SAMPLE_COLUMN"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+					echo "STRANDSPEC:"$STRANDSPEC"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+					echo "ALPHA:"$ALPHA"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+					echo "FC:"$FC"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+					echo "FILTERFUN:"$FILTERFUN"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+					echo "EXPFULL:"$EXPFULL"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+					echo "BAM_SUBSETS:"${aSELECTED_BAM_SUBSETS[@]}"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+					echo "COMPARISONS:"${COMPARISONS}"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+					echo "PAIRED_SAMPLES:"$PAIRED_SAMPLES"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+					echo "PAIRS_COLUMN:"$PAIRS_COLUMN"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+					echo "FDR:"$FDR"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+		done
+	wait
+done
+wait
+fi
+# END of gene expression-specific block
+
+# Gene expression comparison-specific block
+if [[ -n $(echo "$@" | egrep -o "\-\-exp.comparison") ]]; then
+for RUN in ${aCHOICES[@]}
+do
+	if [[ -d ""$WORK_DIR"/RUNS/"$RUN"/MAPPINGS" ]] && [[ -d ""$WORK_DIR"/RUNS/"$RUN"/MAPPINGS_TRIMMED" ]]; then
+		aTRIM_OPTS=(
+		"Original_FASTQ_files" on
+		"TRIMMOMATIC-trimmed_FASTQ_files" on
+		)
+		set +e
+		aCMD=(dialog --no-items --colors --checklist "Please, select the type of \Zb\Z4FASTQ files\Zn you want to use:\Zn\nRun ID: \Zb\Z4"$RUN"\Zn" 0 0 0)
+		aSELECTED_FASTQS=($("${aCMD[@]}" "${aTRIM_OPTS[@]}" 2>&1 >/dev/tty))
+		eval ${SETMODE}
+			if [[ -z "$aSELECTED_FASTQS" ]]; then
+        		dialog --colors --msgbox "There is nothing to do." 0 0 2>&1 >/dev/tty
+        		touch ""$TMPDIR"/job_error."$RUN""
+        		return 1
+        		fi
+		touch ""$TMPDIR"/runjob_"$1"#"$RUN"_Original_FASTQ_files"
+		touch ""$TMPDIR"/runjob_"$1"#"$RUN"_TRIMMOMATIC-trimmed_FASTQ_files"
+	elif [[ ! -d ""$WORK_DIR"/RUNS/"$RUN"/MAPPINGS" ]] && [[ ! -d ""$WORK_DIR"/RUNS/"$RUN"/MAPPINGS_TRIMMED" ]]; then
+		dialog --colors --msgbox "\Zb\Z1FASTQ files in the \Z4"$RUN"\Z1 run were not mapped to the reference genome. Please, perform the mapping and try again." 0 0 2>&1 >/dev/tty
+                touch ""$TMPDIR"/job_error."$RUN""
+                return 1
+	elif [[ -d ""$WORK_DIR"/RUNS/"$RUN"/MAPPINGS_TRIMMED" ]]; then
+		aSELECTED_FASTQS="TRIMMOMATIC-trimmed_FASTQ_files"
+		touch ""$TMPDIR"/runjob_"$1"#"$RUN"_TRIMMOMATIC-trimmed_FASTQ_files"
+	else
+		aSELECTED_FASTQS="Original_FASTQ_files"
+		touch ""$TMPDIR"/runjob_"$1"#"$RUN"_Original_FASTQ_files"
+	fi
+	for FASTQ_TYPE in "${aSELECTED_FASTQS[@]}"
+	do
+	if [[ "$FASTQ_TYPE" == "Original_FASTQ_files"  ]]; then
+		MAPPINGS=MAPPINGS
+	elif [[ "$FASTQ_TYPE" == "TRIMMOMATIC-trimmed_FASTQ_files"  ]]; then
+		MAPPINGS=MAPPINGS_TRIMMED
+	fi
+		f_selection_single "[_.]+genom.*" ""$WORK_DIR"/RUNS/"$RUN"/"$MAPPINGS""
+        	if [[ -z "$CHOICE" ]]; then
+        		dialog --colors --msgbox "\Zb\Z1A necessary file was not selected.\nThe program is unable to complete the job." 0 0 2>&1 >/dev/tty
+        		return 1
+        	fi
+	GENOME="$CHOICE"
+	EXP_COMPARISON_DIR=""$WORK_DIR"/RUNS/"$RUN"/"$MAPPINGS"/"$GENOME"/COMPARISON/EXPRESSION"
+	mkdir -p "$EXP_COMPARISON_DIR"
+	cd "$EXP_COMPARISON_DIR"
+	unset SELCSVS
+        unset CSVNOS	
+	aCSVS=($(find "../../" -regex ".*\(HISAT2\|STAR\)\/EXPRESSION\/\(DESEQ2\|EDGER\)\/.*\/\(edgeR\|DESeq2\)_analysis_results\..*\.csv$"))
+	if [[ -z $(echo "${aCSVS[@]}") ]]; then
+		dialog --colors --msgbox "\Zb\Z1There is nothing to do. You should run the gene expression analysis first.\n\ZnRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn" 0 0 2>&1 >/dev/tty
+		touch ""$TMPDIR"/job_error."$RUN""
+                continue 
+	else
+		set +e
+		SELCSVS=$(dialog --colors --inputbox "The following \Z2CSV tables\Zn have been found. Which of them should be used for \Z2the gene expression comparison\Zn? Please, input \Z2up to 5 corresponding numbers\Zn in the box below, separated with a comma (\Z2,\Zn). Leave the box blank to use all the tables.\n\n\Zb\Z4'$(find "../../" -regex ".*\(HISAT2\|STAR\)\/EXPRESSION\/\(DESEQ2\|EDGER\)\/.*\/\(edgeR\|DESeq2\)_analysis_results\..*\.csv$" | awk -F '/' '{print $NF}' | egrep -n "*")'\n\ZnRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nDestination directory: \Zb\Z4"$EXP_COMPARISON_DIR"" 0 0 2>&1 >/dev/tty) 
+		eval ${SETMODE}
+		if [[ -n "$SELCSVS" ]]; then
+		CSVNOS=$(echo "$SELCSVS" | sed 's/ \?, \?/\\|/g; s/^/\^\\\(/ ; s/$/\\\)\\\:/')
+		fi 
+	fi 
+	touch ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+        echo "GENOME:"$GENOME"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+        echo "FASTQS:"${aSELECTED_FASTQS[@]}"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+	echo "CSVNOS_"$CSVNOS"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+	done
+	wait
+done
+wait
+fi 
+# END of Gene expression comparison-specific block
+
+# Variant Effect Predictor-specific block
+if [[ -n $(echo "$@" | egrep -o "\-\-VEP") ]]; then
+for RUN in ${aCHOICES[@]}
+do
+	if [[ -d ""$WORK_DIR"/RUNS/"$RUN"/MAPPINGS" ]] && [[ -d ""$WORK_DIR"/RUNS/"$RUN"/MAPPINGS_TRIMMED" ]]; then
+		aTRIM_OPTS=(
+		"Original_FASTQ_files" on
+		"TRIMMOMATIC-trimmed_FASTQ_files" on
+		)
+		set +e
+		aCMD=(dialog --no-items --colors --checklist "Please, select the type of \Zb\Z4FASTQ files\Zn you want to use:\Zn\nRun ID: \Zb\Z4"$RUN"\Zn" 0 0 0)
+		aSELECTED_FASTQS=($("${aCMD[@]}" "${aTRIM_OPTS[@]}" 2>&1 >/dev/tty))
+		eval ${SETMODE}
+			if [[ -z "$aSELECTED_FASTQS" ]]; then
+        		dialog --colors --msgbox "There is nothing to do." 0 0 2>&1 >/dev/tty
+        		touch ""$TMPDIR"/job_error."$RUN""
+        		return 1
+        		fi
+		touch ""$TMPDIR"/runjob_"$1"#"$RUN"_Original_FASTQ_files"
+		touch ""$TMPDIR"/runjob_"$1"#"$RUN"_TRIMMOMATIC-trimmed_FASTQ_files"
+	elif [[ ! -d ""$WORK_DIR"/RUNS/"$RUN"/MAPPINGS" ]] && [[ ! -d ""$WORK_DIR"/RUNS/"$RUN"/MAPPINGS_TRIMMED" ]]; then
+		dialog --colors --msgbox "\Zb\Z1FASTQ files in the \Z4"$RUN"\Z1 run were not mapped to the reference genome. Please, perform the mapping and try again." 0 0 2>&1 >/dev/tty
+                touch ""$TMPDIR"/job_error."$RUN""
+                return 1
+	elif [[ -d ""$WORK_DIR"/RUNS/"$RUN"/MAPPINGS_TRIMMED" ]]; then
+		aSELECTED_FASTQS="TRIMMOMATIC-trimmed_FASTQ_files"
+		touch ""$TMPDIR"/runjob_"$1"#"$RUN"_TRIMMOMATIC-trimmed_FASTQ_files"
+	else
+		aSELECTED_FASTQS="Original_FASTQ_files"
+		touch ""$TMPDIR"/runjob_"$1"#"$RUN"_Original_FASTQ_files"
+	fi
+	for FASTQ_TYPE in "${aSELECTED_FASTQS[@]}"
+	do
+	if [[ "$FASTQ_TYPE" == "Original_FASTQ_files"  ]]; then
+		MAPPINGS=MAPPINGS
+	elif [[ "$FASTQ_TYPE" == "TRIMMOMATIC-trimmed_FASTQ_files"  ]]; then
+		MAPPINGS=MAPPINGS_TRIMMED
+	fi
+		f_selection_single "[_.]+genom.*" ""$WORK_DIR"/RUNS/"$RUN"/"$MAPPINGS""
+        	if [[ -z "$CHOICE" ]]; then
+        		dialog --colors --msgbox "\Zb\Z1A necessary file was not selected.\nThe program is unable to complete the job." 0 0 2>&1 >/dev/tty
+        		return 1
+        	fi
+	GENOME="$CHOICE"
+
+	CSVDIR=""$WORK_DIR"/CSV_FILES"
+	mkdir -p "$CSVDIR"
+	f_selection_single "\.(csv|CSV)$" "$CSVDIR"
+        if [[ -z "$CHOICE" ]]; then
+        dialog --colors --msgbox "\Zb\Z1A necessary file was not selected.\nThe program is unable to complete the job." 0 0 2>&1 >/dev/tty
+        return 1
+        fi
+        CSVFILE="$CHOICE"
+	cat "$CSVDIR"/"$CSVFILE" | sed 's/"//g' | sed -n '1p' | sed  's/;/\n/g' |R --slave --no-restore --no-save --file="$(which validate.names.r)" | sed 's/ /;/g; s/$/\n/' | cat - "$CSVDIR"/"$CSVFILE" | sed '2d' > ""$CSVDIR"/"$CSVFILE".tmp" && mv ""$CSVDIR"/"$CSVFILE".tmp" ""$CSVDIR"/"$CSVFILE""
+	aCSV_COLUMNS=($(sed -ne '1p' "$CSVDIR"/"$CSVFILE" | sed 's/;/\n/g'))
+	aCSV_COLUMNSN=($(sed -ne '1p' "$CSVDIR"/"$CSVFILE" | sed 's/;/\n/g' | sed 's/$/ off/'))
+	set +e
+	SAMPLE_COLUMN=$(dialog --no-items --colors --menu "Please, select the column that contains \Zb\Z4unique sample names\Zn.\nRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nCSV file:\n\Zb\Z4"$CSVDIR"/"$CSVFILE"\Zn" 0 0 0 "${aCSV_COLUMNS[@]}" 2>&1 >/dev/tty)
+	eval ${SETMODE}
+	csvcut -d ';' -c "$SAMPLE_COLUMN" "$CSVDIR"/"$CSVFILE" | sed '1d' > ""$TMPDIR"/csv_samples"
+
+	SAMPLENAMESN=$(cat ""$TMPDIR"/csv_samples" | wc -l)
+	USAMPLENAMESN=$(cat ""$TMPDIR"/csv_samples" | sort -u | wc -l)
+	if [[ $SAMPLENAMESN != $USAMPLENAMESN ]]; then
+		dialog --colors --msgbox "\Zb\Z1The selected variable does not contain unique sample names. Please, correct this error." 0 0 2>&1 >/dev/tty
+		#return 1
+		touch ""$TMPDIR"/job_error."$RUN""
+		continue
+	fi
+	
+	if [[ -n $(find ""$WORK_DIR"/RUNS/"$RUN"/FASTQ" -type f -regex ".*_R[1-2].*\.fastq\.gz$") ]];then
+		aSAMPLENAMES=($(find ""$WORK_DIR"/RUNS/"$RUN"/FASTQ" -maxdepth 1 -type f -regex ".*_R[1-2].*\.fastq\.gz$" | awk -F "/" '{print $NF}' | sed -e 's/_R[1-2]\{1\}.*\.fastq\.gz$//' | sort -u))
+	else
+		dialog --colors --msgbox "\Zb\Z1No sample names were found in the \Z2""$WORK_DIR"/RUNS/"$RUN"/FASTQ"\Z1 folder. Please, check and correct this issue." 0 0 2>&1 >/dev/tty
+		continue
+	fi
+	rm -rf ""$TMPDIR"/missing_csvs"
+	touch ""$TMPDIR"/missing_csvs"
+		for SAMPLE in "${aSAMPLENAMES[@]}"
+		do
+		if [[ -z $(egrep "^"$SAMPLE"$" ""$TMPDIR"/csv_samples") ]]; then
+                	echo "$SAMPLE" >> ""$TMPDIR"/missing_csvs"
+        	fi
+		done
+	if [[ -n $(cat ""$TMPDIR"/missing_csvs") ]]; then
+        set +e
+	dialog --colors --defaultno --yesno "\Zb\Z1The following samples are missing in your CSV file:\Zn\n$(cat "$TMPDIR/missing_csvs" | sort -u | xargs | sed 's/ /, /g').\n\n\Zb\Z4Do you want to proceed with the analysis anyway?\Zn" 0 0 2>&1 >/dev/tty
+	local EXITCODE="$?"
+	eval ${SETMODE}
+
+		if [[ "$EXITCODE" -eq 1 ]]; then
+		touch ""$TMPDIR"/job_error."$RUN""
+		continue
+		fi
+	fi
+
+	set +e
+	dialog --colors --defaultno --yesno "Are the samples in the \Zb\Z2$RUN\Zn RUN paired?" 7 70 2>&1 >/dev/tty
+	local EXITCODE="$?"
+	eval ${SETMODE}
+	if [[ "$EXITCODE" == 0 ]]; then
+		PAIRED_SAMPLES="TRUE"
+	else	
+		PAIRED_SAMPLES="FALSE"
+	fi
+
+	if [[  $PAIRED_SAMPLES == "TRUE" ]]; then
+		set +e
+		PAIRS_COLUMN=$(dialog --no-items --colors --menu "Please, select the column that contains \Zb\Z4pair identifiers\Zn.\nRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nCSV file:\n\Zb\Z4"$CSVDIR"/"$CSVFILE"\Zn" 0 0 0 "${aCSV_COLUMNS[@]}" 2>&1 >/dev/tty)
+		eval ${SETMODE}
+		aPAIRS=($(csvcut -d ';' -c "$PAIRS_COLUMN" "$CSVDIR"/"$CSVFILE" | sed '1d' | sort -u))
+		MODULORES=$(echo "print($SAMPLENAMESN%${#aPAIRS[@]})" | python)
+	
+		if [[ ! $MODULORES -eq 0 ]]; then
+			set +e
+			dialog --colors --defaultno --yesno "\Zb\Z1The selected variable seems to be an incorrect pair identifier, since the number of its values does not divide by the number of samples without a rest. Do you want to proceed with the analysis anyway?" 0 0 2>&1 >/dev/tty
+			local EXITCODE="$?"
+			eval ${SETMODE}
+
+			if [[ "$EXITCODE" -eq 1 ]]; then
+				touch ""$TMPDIR"/job_error."$RUN""
+				continue
+			fi
+		fi
+	else
+		PAIRS_COLUMN=NA
+	fi
+
+	unset GROUPING_SEL
+	until [[ "$GROUPING_SEL" == 1 ]]
+	do 
+	set +e
+	GROUPING_VARS=($(dialog --no-items --colors --checklist "Please, select\Zb\Z4 zero, one or two grouping variables\Zn you want to use in the VEP analysis.\Zb\Z2 If no selection is made, the entire group of samples will be selected\Zn.\nRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nCSV file:\n\Zb\Z4"$CSVDIR"/"$CSVFILE"\Zn" 0 0 0 "${aCSV_COLUMNSN[@]}" 2>&1 >/dev/tty | sed 's/ /,/g'))
+	eval ${SETMODE}
+		if [[ -z "${GROUPING_VARS[@]}" ]]; then
+		GROUPING_VARS=ALL_SAMPLES
+		fi
+	echo "GROUPING_VARS:"${GROUPING_VARS[@]}"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+	set +e
+	dialog --colors --defaultno --yesno "Do you want to select another \Zb\Z4grouping variable\Zn?\nRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nCSV file:\n\Zb\Z4"$CSVDIR"/"$CSVFILE"\Zn" 0 0 2>&1 >/dev/tty
+	local EXITCODE="$?"
+        eval ${SETMODE}
+	GROUPING_SEL="$EXITCODE"
+	done 
+
+unset FACTOR_SEL
+until [[ "$FACTOR_SEL" == 1 ]]
+do
+	set +e
+	FACTOR_VAR="$(dialog --no-items --colors --menu "Please, select\Zb\Z4 one independent factor\Zn you want to use in the VEP analysis:\nRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nCSV file:\n\Zb\Z4"$CSVDIR"/"$CSVFILE"\Zn" 0 0 0 "${aCSV_COLUMNS[@]}" 2>&1 >/dev/tty | sed 's/ /,/g')"
+	eval ${SETMODE}
+	if [[ -z "$FACTOR_VAR" ]]; then
+        	dialog --colors --msgbox "\Zb\Z1The independent factor was not selected. The program will exit now." 0 0 2>&1 >/dev/tty
+        	touch ""$TMPDIR"/job_error."$RUN""
+        	return 1
+        fi
+	
+	echo "FACTOR_VAR:"$FACTOR_VAR"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+	set +e
+	dialog --colors --defaultno --yesno "Do you want to select another \Zb\Z4independent factor\Zn?\nRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nCSV file:\n\Zb\Z4"$CSVDIR"/"$CSVFILE"\Zn" 0 0 2>&1 >/dev/tty
+	local EXITCODE="$?"
+        eval ${SETMODE}
+	FACTOR_SEL="$EXITCODE"
+done 
+
+	DEFAULT_VAF=10
+        set +e
+	VAF=$(dialog --colors --no-mouse --inputbox "Provide the \Zb\Z2variant allele frequency threshold (in percentage)\Zn for the \Zb\Z4VEP\Zn analysis. The default value is: \Zb\Z4'${DEFAULT_VAF}'\Zn\nRun ID: \Zb\Z4"$RUN"\Zn" 0 0 2>&1 >/dev/tty)
+        eval ${SETMODE}
+        if [[ "$?" != 0 ]]; then
+        VAF=0
+        elif [[ -z "${VAF}" ]] ; then
+        VAF="${DEFAULT_VAF}"
+        fi
+
+	DEFAULT_FILTERFUN='+/MinAB=2/Qual=20/MinMQ=20/MinDP=5/'
+        set +e
+	FILTERFUN=$(dialog --colors --no-mouse --inputbox "Provide the \Zb\Z2filtering function\Zn for the analysis with the \Zb\Z4vcf-annotate\Zn command. The default value (recommended in \Zb\Z2WES and WGS studies\Zn) is:\n\Zb\Z4${DEFAULT_FILTERFUN}\Zn.\nIn \Zb\Z2transcriptomic analyses\Zn, it is better to omit the \Zb\Z4/MinDP block/\Zn.\nRun ID: \Zb\Z4"$RUN"\Zn" 0 0 2>&1 >/dev/tty)
+        eval ${SETMODE}
+
+        if [[ "$?" != 0 ]]; then
+        FILTERFUN="UNFILTERED"
+        elif [[ -z "${FILTERFUN}" ]] ; then
+        FILTERFUN="${DEFAULT_FILTERFUN}"
+        fi
+	FILTERFUN_DIR=$(echo $FILTERFUN | sed 's%\/%.%g')
+
+	TXTDIR=""$WORK_DIR"/TXT_FILES"
+	mkdir -p "$TXTDIR"
+		set +e
+		TXTFILE=$(dialog --colors --title "Select the file containing one gene per line to evaluate the gene signature. Choose: \Zb\Z4'Cancel'\Zn to omit this step; Run ID: "$RUN"" --fselect ""$TXTDIR"/" 10 0 0 2>&1 >/dev/tty)
+		local EXITCODE="$?"
+		eval ${SETMODE}
+		if [[ "$EXITCODE" == 0 ]]; then
+			if [[ ! -f "$TXTFILE" ]] ; then
+        		dialog --colors --msgbox "\Zb\Z1The file \Z4"$TXTFILE"\Z1 does not exist." 0 0 2>&1 >/dev/tty
+                	touch ""$TMPDIR"/job_error."$RUN""
+                	return 1
+        		fi
+		else
+			TXTFILE="NA"
+		fi
+		echo "TXTFILE:"$TXTFILE"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+
+	f_selection "(STAR|HISAT2)" ""$WORK_DIR"/RUNS/"$RUN"/"$MAPPINGS"/"$GENOME"" "--on" "--alt.name"
+        	if [[ -z $(echo "${aCHOICES_ALT[@]}") ]]; then
+        	dialog --colors --msgbox "There is nothing to do." 0 0 2>&1 >/dev/tty
+        	touch ""$TMPDIR"/job_error."$RUN""
+        	return 1
+        	fi
+		aSELECTED_MAPPERS=($(echo "${aCHOICES_ALT[@]}"))
+
+					aBAM_TYPES=(
+					"BAMs_w_dups" on
+					"BAMs_wo_dups" on
+					)
+					set +e
+					aCMD=(dialog --no-items --colors --checklist "Please, select the \Zb\Z4BAM file type\Zn you want to use:\nBAM files with duplicates (\Zb\Z2BAMs_w_dups\Zn) or BAM files without duplicates (\Zb\Z2BAMs_wo_dups\Zn)\nRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn" 0 0 0)
+
+					aSELECTED_BAMS=($("${aCMD[@]}" "${aBAM_TYPES[@]}" 2>&1 >/dev/tty))
+					eval ${SETMODE}
+
+					if [[ -z $(echo "${aSELECTED_BAMS[@]}") ]]; then
+        					dialog --colors --msgbox "There is nothing to do." 0 0 2>&1 >/dev/tty
+        					touch ""$TMPDIR"/job_error."$RUN""
+        					return 1
+        				fi
+
+SUBSET_DIRS=($(find ""$WORK_DIR"/RUNS/"$RUN"/"$MAPPINGS"/"$GENOME"" -iregex ".*$(echo ${aSELECTED_MAPPERS[@]} | sed 's/^/\\(/; s/$/\\)/; s/ /\\|/').*bed\.subset$" -type d))
+
+if ([[ -n $(ls ""$WORK_DIR"/RUNS/"$RUN"/"$MAPPINGS"/"$GENOME"/STAR/VEP/"{BAMs_wo_dups,BAMs_w_dups}"/VAF:"$VAF"/"$FILTERFUN_DIR"/VEP_results_for_each_sample" 2>/dev/null) ]] && [[ -n $(echo ${aSELECTED_MAPPERS[@]} | grep -o "STAR") ]]) || ([[ -n $(ls ""$WORK_DIR"/RUNS/"$RUN"/"$MAPPINGS"/"$GENOME"/HISAT2/VEP/"{BAMs_wo_dups,BAMs_w_dups}"/VAF:"$VAF"/"$FILTERFUN_DIR"/VEP_results_for_each_sample" 2>/dev/null) ]] && [[ -n $(echo ${aSELECTED_MAPPERS[@]} | grep -o "HISAT2") ]]); then
+			set +e
+			dialog --colors --defaultno --yesno "\Zb\Z1It seems that the Variant Effect Prediction has already been performed!!!\Zn\nRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nDo you want to run it again?" 0 0 2>&1 >/dev/tty
+			local EXITCODE="$?"
+        		eval ${SETMODE}
+        		if [[ "$EXITCODE" != 0 ]]; then
+				if [[ -z "${SUBSET_DIRS[@]}" ]]; then
+					touch ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE"_"$MAPPER""
+					break
+				else
+					VEPFULL="no"
+				fi
+
+			else
+						set +e
+						dialog --colors --defaultno --yesno "Do you want to \Z2overwrite the existing VEP analysis results?\Zn\nIf you select 'No', the VEP analysis step will be skipped and only the R-based computations will be carried out.\nRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\n" 0 0 2>&1 >/dev/tty
+						local EXITCODE="$?"
+						eval ${SETMODE}
+						if [[ "$EXITCODE" == 0 ]]; then
+							VEP_OVERRIDE="yes"
+						else
+							VEP_OVERRIDE="no"
+						fi
+			fi
+		fi
+				if [[ -n "${SUBSET_DIRS[@]}" ]]; then
+					SUBSET_DIRS_ABBS=($(echo "${SUBSET_DIRS[@]}" | xargs printf '%s\n' | awk -F "/" '{print $(NF-1), $NF}' OFS="/" | sed 's/$/ on/'))
+					
+					set +e
+					aCMD=(dialog --no-items --colors --checklist "Please, select the \Zb\Z4folder(s) with BAM subsets\Zn you want to use:\nRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn" 0 0 0)
+
+					aSELECTED_BAM_SUBSETS=($("${aCMD[@]}" "${SUBSET_DIRS_ABBS[@]}" 2>&1 >/dev/tty))
+					eval ${SETMODE}
+				fi
+
+					set +e
+					dialog --colors --yesno "Do you want to adjust p-values for multiple comparisons (using the \Zb\Z4FDR\Zn correction)?\Zn\n\nRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn" 0 0 2>&1 >/dev/tty
+					local EXITCODE="$?"
+        				eval ${SETMODE}
+					if [[ $EXITCODE -eq 0 ]]; then
+						FDR="TRUE"
+					else
+						FDR="FALSE"
+					fi
+
+				touch ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+				echo "PAIRED_SAMPLES:"$PAIRED_SAMPLES"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+				echo "PAIRS_COLUMN:"$PAIRS_COLUMN"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+				echo "MAPPERS:"${aSELECTED_MAPPERS[@]}"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+                                echo "GENOME:"$GENOME"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+				echo "CSVFILE:"$CSVDIR"/"$CSVFILE"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+				echo "SAMPLE_COLUMN:"$SAMPLE_COLUMN"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+				echo "BAMS:"${aSELECTED_BAMS[@]}"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+				echo "FASTQS:"${aSELECTED_FASTQS[@]}"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+				echo "VAF:"${VAF}"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+				echo "FILTERFUN:"${FILTERFUN}"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+				echo "BAM_SUBSETS:"${aSELECTED_BAM_SUBSETS[@]}"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+				echo "VEPFULL:"$VEPFULL"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+				echo "VEP_OVERRIDE:"$VEP_OVERRIDE"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+				echo "FDR:"$FDR"" >> ""$TMPDIR"/runjob_"$1"#"$RUN"_"$FASTQ_TYPE""
+	done
+	wait
+done
+wait
+fi
+# END of Variant Effect Predictor-specific block
+
+for RUN in "${aCHOICES[@]}"
+do
+	if [[ -n $(cat ""$TMPDIR"/runjob_"$1"#"$RUN""*) ]]; then
+		rm -rf ""$TMPDIR"/job_error."$RUN""
+		"$1" &&
+		if [[ ! -f ""$TMPDIR"/job_error."$RUN"" ]]; then
+			dialog --sleep 3 --colors --infobox "\Zb\Z4$OPT\Zn is complete.\nRun ID: \Zb\Z4"$RUN"\Zn" 0 0 2>&1 >/dev/tty
+		else
+			dialog --sleep 3 --colors --infobox "\Zb\Z4$OPT\Z1 is not complete due to an error.\n\ZnRun ID: \Zb\Z4"$RUN"\Zn" 0 0 2>&1 >/dev/tty
+		fi
+	else
+	dialog --sleep 3 --colors --infobox "\Zb\Z4$OPT\Zn was not performed.\nRun ID: \Zb\Z4"$RUN"\Zn" 0 0 2>&1 >/dev/tty
+	touch ""$TMPDIR"/job_error."$RUN""
+	fi
+done
+wait
+
+ls -1 $TMPDIR | grep "runjob_"$1"#" | awk -F "#" '{print $2}' | awk -F "_" '{print $1}' > ""$TMPDIR"/runs_list"
+rm -rf ""$TMPDIR"/runjob_"$1"#"*
+}
+
+function f_fastq_qc {
+JOB=FASTQC
+aSELECTED_FASTQS=($(awk -F ":" '/FASTQS:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN""))
+for FASTQ_TYPE in "${aSELECTED_FASTQS[@]}"
+	do
+		if [[ "$FASTQ_TYPE" == "Original_FASTQ_files" ]]; then
+		FASTQDIR=""$WORK_DIR"/RUNS/"$RUN"/FASTQ/"
+		elif [[ "$FASTQ_TYPE" == "TRIMMOMATIC-trimmed_FASTQ_files" ]]; then
+		FASTQDIR=""$WORK_DIR"/RUNS/"$RUN"/FASTQ_TRIMMED/"
+		fi
+		rm -rf ""$FASTQDIR"/"$JOB""
+		mkdir -p ""$FASTQDIR"/"$JOB"/logs"
+aFILES=($(find "$FASTQDIR" -maxdepth 1 -type f -regex ".*\.fastq\.gz"))
+FILESN=$(printf '%s\n' "${aFILES[@]}" | wc -l)
+f_threads "$FILESN"
+	COUNTER=0
+	for i in ${aFILES[@]}
+	do
+	set +e
+	let COUNTER++
+	eval ${SETMODE}
+	(
+	echo "$(echo "print(int(round("$COUNTER"./"$SAMPLESN"*100,0)))" | python)" | dialog --colors --gauge "FASTQ files quality check with \Zb\Z4"$JOB"\Zn is being performed...\nThe results will be stored in:\n\Zb\Z4""$FASTQDIR""$JOB""\Zn directory.\nRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nFile:\n\Zb\Z2$i\Zn (\Zb\Z4"$COUNTER"\Zn of \Zb\Z4"$SAMPLESN"\Zn)." 13 80 0 2>&1 >/dev/tty
+	fastqc --outdir ""$FASTQDIR"/"$JOB"" --threads "$THREADS" "$i" > ""$FASTQDIR"/"$JOB"/logs/$(basename "$i").log" 2>&1
+	wait
+	) &
+	f_parallel
+	done
+	wait
+# Generate a table with the results
+aFILES=($(find ""$FASTQDIR"/"$JOB"" -iregex ".*_fastqc\.zip" | awk 'NF{NF-=1}1' FS='.' | sort | uniq))
+LASTFILE=$(echo "$(printf '%s\n' "${aFILES[@]}" | tail -n 1).zip")
+FOLDER=$(printf '%s\n' "${aFILES[@]}" | tail -n 1 | awk -F/ '{print$NF}')
+HEADER1="Filename;Total Sequences;Sequence length;Percent GC;Sequences flagged as poor quality"
+HEADER2="Basic Statistics;Per base sequence quality;Per tile sequence quality;Per sequence quality scores;Per base sequence content;Per sequence GC content;Per base N content;Sequence Length Distribution;Sequence Duplication Levels;Overrepresented sequences;Adapter Content"
+HEADER=""$HEADER1";Dominating.Phred.Score.Val;"$HEADER2";Trimming.status"
+echo "$HEADER" > ""$FASTQDIR"/"$JOB"/"$JOB"."$RUN".csv"
+for i in "${aFILES[@]}"
+do
+FOLDER=$(echo "$i" | awk -F/ '{print$NF}')
+ROW1=$(unzip -p "$i".zip "$FOLDER"/fastqc_data.txt | head -n 11 | awk '{print$1";"$2}' FS='\t' | datamash transpose -t ';' | awk -F";" '{print $4,$7,$10,$11,$9}' OFS=";" | sed 1d)
+ROW1_1=$(unzip -p "$i".zip "$FOLDER"/fastqc_data.txt | sed '/Per sequence quality scores/,/>>END_MODULE/!d;/>>END_MODULE/q' | sed '1,2d; $d' | sort -k2 -h -r | sed -ne '1p' | awk '{print $1}')
+aROW2=($(unzip -p "$i".zip "$FOLDER"/summary.txt | awk -F"\t" '{print$2,$1}' OFS=';' | datamash transpose -t ';' | sed 1d | sed 's/;/\n/g'))
+if [[ ${#aROW2[@]} -eq 11 ]];then 
+	ROW2=$(echo "${aROW2[@]}" | sed 's/ /;/g')
+else 
+	ROW2=$(echo "${aROW2[@]:0:2} "NA" ${aROW2[@]:2}" | sed 's/ /;/g')
+fi
+
+if [[ -n $(echo "$i" | grep "trimmed_paired") ]]; then
+	ROW=""$ROW1";"$ROW1_1";"$ROW2";Trimmed paired"
+elif [[ -n $(echo "$i" | grep "trimmed_unpaired") ]]; then
+	ROW=""$ROW1";"$ROW1_1";"$ROW2";Trimmed unpaired"
+elif [[ -z $(echo "$i" | grep "trimmed") ]]; then
+	ROW=""$ROW1";"$ROW1_1";"$ROW2";Not trimmed"
+fi
+echo "$ROW" >> ""$FASTQDIR"/"$JOB"/"$JOB"."$RUN".csv"
+done
+wait
+done
+wait
+}
+function f_Rdisplay() { ## Takes one argument, whih is the job name. It also takes one parameter: "--subfolder:..."
+unset RUN
+f_selection "[A-Z0-9]+" ""$WORK_DIR"/RUNS/"
+if [[ -z "${aCHOICES[@]}" ]]; then
+dialog --colors --msgbox "There is nothing to do." 0 0 2>&1 >/dev/tty
+else
+rm -rf ".RData"
+for RUN in "${aCHOICES[@]}"
+do
+	if [[ -z $(echo "$@" | egrep -o "\-\-subfolder:.[^ ]*") ]]; then
+		dialog --sleep 3 --colors --infobox "The subfolder name is missing. Please, correct the Rdisplay function arguments." 0 0 2>&1 >/dev/tty
+return 1
+	else
+		aSUBFOLDERS=($(echo "$@" | egrep -o "\-\-subfolder:.[^ ]*" | awk -F ":" '/--subfolder:/ {print $2}'))
+		for SUBFOLDER in "${aSUBFOLDERS[@]}"
+		do
+			if [[ ! -d ""$WORK_DIR"/RUNS/"$RUN"/"$SUBFOLDER"" ]]; then
+dialog --sleep 3 --colors --infobox "The \Zb\Z4"$1" analysis\Zn in the folder \Zb\Z4""$WORK_DIR"/RUNS/"$RUN"/"$SUBFOLDER""\Zn was not performed.\nRun ID: \Zb\Z4$RUN\Zn" 0 0 2>&1 >/dev/tty
+			continue
+			fi
+			SUBNAME="$(echo "$SUBFOLDER" | sed 's/\//./g')"
+			echo "'"$RUN"_"$SUBNAME"' <- read.csv(file='"$WORK_DIR"/RUNS/"$RUN"/"$SUBFOLDER"/"$1"."$RUN".csv', header=TRUE, sep=';')" | R --save --silent >> ""$WORK_DIR"/"$APPNAME".log" 2>>$WORK_DIR/ERRORS.log
+		done
+		wait
+	fi	
+done
+wait
+rstudio & >> ""$WORK_DIR"/"$APPNAME".log" 2>>$WORK_DIR/ERRORS.log
+fi
+}
+
+function f_trimmomatic() {
+JOB=FASTQ_TRIMMED
+aSAMPLES=($(ls -A ""$WORK_DIR"/RUNS/"$RUN"/FASTQ" | egrep ".*\.fastq\.gz$" | awk 'NF{NF-=3}1' FS='_' OFS='_' | sort | uniq))
+SAMPLESN=$(printf '%s\n' "${aSAMPLES[@]}" | wc -l)
+f_threads "$SAMPLESN"
+COUNTER=0
+rm -rf ""$WORK_DIR"/RUNS/"$RUN"/"$JOB""
+mkdir -p ""$WORK_DIR"/RUNS/"$RUN"/"$JOB"/logs"
+
+	ADAPTER=$(awk -F ":" '/ADAPTER:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"")
+	PHREDSCORE=$(awk -F ":" '/PHREDSCORE:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"")
+	LENGTH=$(awk -F ":" '/LENGTH:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"")
+
+for i in ${aSAMPLES[@]}
+	do
+	set +e
+	let COUNTER++
+	eval ${SETMODE}
+	(
+	echo "$(echo "print(int(round("$COUNTER"./"$SAMPLESN"*100,0)))" | python)" | dialog --colors --gauge "FASTQ files adapter removing and quality-based sequence trimming with \Zb\Z4TRIMMOMATIC\Zn is being performed...\nThe results will be stored in:\n\Zb\Z4""$WORK_DIR"/RUNS/"$RUN"/"$JOB""\Zn directory.\nRun ID: \Zb\Z4"$RUN"\Zn\nNGS adapters file: \Zb\Z2"$ADAPTER"\Zn\nLimiting phred quality score: \Zb\Z2"$PHREDSCORE"\Zn\nLimiting read length: \Zb\Z2"$LENGTH"\Zn\nSample: \Zb\Z2$(basename "$i")\Zn (\Zb\Z4"$(($COUNTER))"\Zn of \Zb\Z4"$SAMPLESN"\Zn)." 0 0 0 2>&1 >/dev/tty
+	READS=$(find ""$WORK_DIR"/RUNS/"$RUN"/FASTQ" -iregex ".*\/"$i"_\(R1\|R2\)_"$RUN"_merged.fastq.gz" | sort | uniq | tr "\n" " ")
+		READ1=$(echo "$READS" | awk '{print $1}')
+                READ2=$(echo "$READS" | awk '{print $2}')
+		READ1_FILE=$(basename "$READ1" | awk 'NF{NF-=2}1' FS='.')
+		READ2_FILE=$(basename "$READ2" | awk 'NF{NF-=2}1' FS='.')
+		trimmomatic PE -threads "$THREADS" $(echo "$READ1") $(echo "$READ2") ""$WORK_DIR"/RUNS/"$RUN"/"$JOB"/"$READ1_FILE"_trimmed_paired.fastq.gz" ""$WORK_DIR"/RUNS/"$RUN"/"$JOB"/"$READ1_FILE"_trimmed_unpaired.fastq.gz" ""$WORK_DIR"/RUNS/"$RUN"/"$JOB"/"$READ2_FILE"_trimmed_paired.fastq.gz" ""$WORK_DIR"/RUNS/"$RUN"/"$JOB"/"$READ2_FILE"_trimmed_unpaired.fastq.gz" ILLUMINACLIP:""$CONDAROOT"/share/trimmomatic/adapters/"$ADAPTER":2:30:10" LEADING:"$PHREDSCORE" TRAILING:"$PHREDSCORE" SLIDINGWINDOW:5:"$PHREDSCORE" MINLEN:"$LENGTH" >>""$WORK_DIR"/RUNS/"$RUN"/"$JOB"/logs/"$i".trimmomatic.log" 2>&1
+	wait
+	) &
+	f_parallel
+	done
+	wait
+# Generate a table with the results
+rm -rf ""$WORK_DIR"/RUNS/"$RUN"/"$JOB"/"$JOB"."$RUN".csv"
+for j in "${aSAMPLES[@]}"
+do
+	cat ""$WORK_DIR"/RUNS/"$RUN"/"$JOB"/logs/"$j".trimmomatic.log" | awk '/Input Read Pairs/ {print $4,$7,$8,$12,$13,$17,$18,$20,$21}' | sed "s/[()%]//g; s/,/./g; s/ /;/g; s/^/$j;/" >> ""$WORK_DIR"/RUNS/"$RUN"/"$JOB"/"$JOB"."$RUN".csv"
+	wait
+done
+sed -i '1i\Sample_Name;Input_Read_Pairs;Both_Reads_Surviving;Percent_of_Both_Reads_Surviving;Forward_Only_Reads_Surviving;Percent_of_Forward_Only_Reads_Surviving;Reverse_Only_Reads_Surviving;Percent_of_Reverse_Only_Reads_Surviving;Dropped_Reads;Percent_of_Dropped_Reads\' ""$WORK_DIR"/RUNS/"$RUN"/"$JOB"/"$JOB"."$RUN".csv" &&
+
+trim.table.r ""$WORK_DIR"/RUNS/"$RUN"/"$JOB"/"$JOB"."$RUN".csv" 2>>$WORK_DIR/ERRORS.log
+}
+function f_decompress() {
+# This function takes two arguments. The first one is the folder name, the second is the file name to decompress.
+NAME_DEC=$(echo "$2" | awk 'NF{NF-=1}1' FS='.' OFS='.')
+dialog --sleep 3 --colors --infobox "Decompressing the\n\Zb\Z4"$2"\Zn file to:\n\Zb\Z4"$TMPDIR_BIG"/"$NAME_DEC"\Zn..." 0 0 2>&1 >/dev/tty
+gzip -dkcf < ""$1"/"$2"" > ""$TMPDIR_BIG"/"$NAME_DEC""
+}
+function f_dir_replace() {
+# This function takes one argument which is the name of the folder to replace.
+rm -rf ""$TMPDIR"/job_error."$RUN""
+if [[ -d "$1" ]]; then
+set +e
+dialog --colors --defaultno --yesno "\Zb\Z1The folder:\n\Zb\Z4"$1"\Zn \Zb\Z1already exists.\nDo you want to replace its content?" 0 0 2>&1 >/dev/tty
+local EXITCODE="$?"
+eval ${SETMODE}
+        if [[ "$EXITCODE" != 0 ]]; then
+	touch ""$TMPDIR"/job_error."$RUN""
+	return 1
+        else
+	touch ""$TMPDIR"/replace_"$1""
+	fi
+fi
+}
+function f_seq_mapping {
+aSAMPLES=($(ls -A ""$WORK_DIR"/RUNS/"$RUN"/FASTQ" | egrep ".*\.fastq\.gz$" | awk 'NF{NF-=3}1' FS='_' OFS='_' | sort | uniq))
+SAMPLESN=$(printf '%s\n' "${aSAMPLES[@]}" | wc -l)
+f_threads "$SAMPLESN"
+# Genome indexing
+aSELECTED_MAPPERS=($(awk -F ":" '/MAPPERS:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN""))
+for MAPPER in "${aSELECTED_MAPPERS[@]}"
+	do
+JOB="$MAPPER"
+GENOME_DIR=""$WORK_DIR"/GENOMES/"$GENOME"/"$JOB""
+	if [[ ! -e "$GENOME_DIR" ]]; then
+		if [[ ! -e ""$TMPDIR_BIG"/"$FASTA_DEC"" ]]; then
+		f_decompress ""$WORK_DIR"/REFSEQS" "$FASTA"
+		FASTA_DEC="$NAME_DEC"
+		fi
+		if [[ ! -e ""$TMPDIR_BIG"/"$GTF_DEC"" ]]; then
+		f_decompress ""$WORK_DIR"/REFSEQS" "$GTF"
+		GTF_DEC="$NAME_DEC"
+		fi
+
+	dialog --colors --infobox "The \Zb\Z4"$JOB"\Zn-compatible genome index is being generated in the:\n\Zb\Z4"$GENOME_DIR"\Zn directory..." 0 0 2>&1 >/dev/tty
+	rm -rf "$GENOME_DIR"
+	mkdir -p "$GENOME_DIR" &&
+		if [[ "$JOB" == "STAR" ]]; then
+		STAR --runMode genomeGenerate --genomeDir "$GENOME_DIR" --genomeFastaFiles ""$TMPDIR_BIG"/"$FASTA_DEC"" --sjdbGTFfile ""$TMPDIR_BIG"/"$GTF_DEC"" --runThreadN "$CPUS" > ""$GENOME_DIR"/logs" 2>>$WORK_DIR/ERRORS.log
+		elif [[ "$JOB" == "HISAT2" ]]; then
+		hisat2-build -p "$CPUS" ""$TMPDIR_BIG"/"$FASTA_DEC"" ""$GENOME_DIR"/genome" > ""$GENOME_DIR"/logs" 2>&1
+		fi
+	dialog --sleep 3 --colors --infobox "The \Zb\Z4"$JOB"\Zn-compatible genome indexing is complete." 0 0 2>&1 >/dev/tty
+	fi
+# DNA/RNA mapping
+aSELECTED_FASTQS=($(awk -F ":" '/FASTQS:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN""))
+for FASTQ_TYPE in "${aSELECTED_FASTQS[@]}"
+	do
+		if [[ "$FASTQ_TYPE" == "Original_FASTQ_files" ]]; then
+		MAPPING_DIR=""$WORK_DIR"/RUNS/"$RUN"/MAPPINGS/"$GENOME"/"$JOB""
+		elif [[ "$FASTQ_TYPE" == "TRIMMOMATIC-trimmed_FASTQ_files" ]]; then
+		MAPPING_DIR=""$WORK_DIR"/RUNS/"$RUN"/MAPPINGS_TRIMMED/"$GENOME"/"$JOB""
+		fi
+		rm -rf "$MAPPING_DIR"
+		mkdir -p "$MAPPING_DIR"
+	COUNTER=0
+	for i in ${aSAMPLES[@]}
+	do
+	set +e
+	let COUNTER++
+	eval ${SETMODE}
+	(
+	echo "$(echo "print(int(round("$COUNTER"./"$SAMPLESN"*100,0)))" | python)" | dialog --colors --gauge "DNA/RNA mapping with \Zb\Z4"$JOB"\Zn is being performed...\nThe results will be stored in:\n\Zb\Z4"$MAPPING_DIR"\Zn directory.\nRun ID: \Zb\Z4"$RUN"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nSample: \Zb\Z2"$i"\Zn (\Zb\Z4"$COUNTER"\Zn of \Zb\Z4"$SAMPLESN"\Zn)." 13 70 0 2>&1 >/dev/tty
+		if [[ "$JOB" == "STAR" ]] && [[ "$FASTQ_TYPE" == "Original_FASTQ_files" ]]; then
+		READS=$(find ""$WORK_DIR"/RUNS/"$RUN"/FASTQ" -iregex ".*\/"$i"_\(R1\|R2\)_"$RUN"_merged\.fastq\.gz" | sort | uniq | tr "\n" " ")
+		STAR --genomeDir "$GENOME_DIR" --genomeLoad LoadAndKeep --runThreadN "$THREADS" --readFilesIn $(echo "$READS") --outFileNamePrefix ""$MAPPING_DIR"/"$i"." --outSAMunmapped Within --outSAMtype BAM Unsorted --outSAMattributes All --readFilesCommand zcat > ""$MAPPING_DIR"/"$i".logs" 2>>$WORK_DIR/ERRORS.log
+		elif [[ "$JOB" == "HISAT2" ]] && [[ "$FASTQ_TYPE" == "Original_FASTQ_files" ]]; then
+		READS=$(find ""$WORK_DIR"/RUNS/"$RUN"/FASTQ" -iregex ".*\/"$i"_\(R1\|R2\)_"$RUN"_merged.fastq.gz" | sort | uniq | tr "\n" " ")
+		READ1=$(echo "$READS" | awk '{print $1}')
+		READ2=$(echo "$READS" | awk '{print $2}')
+ 		hisat2 -p "$THREADS" -x ""$GENOME_DIR"/genome" -1 $(echo "$READ1") -2 $(echo "$READ2") -S ""$MAPPING_DIR"/"$i".sam" > ""$MAPPING_DIR"/"$i".logs" 2>&1
+		elif [[ "$JOB" == "STAR" ]] && [[ "$FASTQ_TYPE" == "TRIMMOMATIC-trimmed_FASTQ_files" ]]; then
+		READS=$(find ""$WORK_DIR"/RUNS/"$RUN"/FASTQ_TRIMMED" -regex ".*\/"$i"_\(R1\|R2\)_"$RUN"_merged_trimmed_paired\.fastq\.gz" | sort | uniq | tr "\n" " ")
+		STAR --genomeDir "$GENOME_DIR" --genomeLoad LoadAndKeep --runThreadN "$THREADS" --readFilesIn $(echo "$READS") --outFileNamePrefix ""$MAPPING_DIR"/"$i".paired." --outSAMunmapped Within --outSAMtype BAM Unsorted --outSAMattributes All --readFilesCommand zcat > ""$MAPPING_DIR"/"$i".logs" 2>>$WORK_DIR/ERRORS.log &&
+		READS=$(find ""$WORK_DIR"/RUNS/"$RUN"/FASTQ_TRIMMED" -regex ".*\/"$i"_\(R1\|R2\)_"$RUN"_merged_trimmed_unpaired\.fastq\.gz" | sort | uniq | tr "\n" " ")
+		READ1=$(echo "$READS" | awk '{print $1}')
+                READ2=$(echo "$READS" | awk '{print $2}')
+                STAR --genomeDir "$GENOME_DIR" --genomeLoad LoadAndKeep --runThreadN "$THREADS" --readFilesIn $(echo "$READ1") --outFileNamePrefix ""$MAPPING_DIR"/"$i".unpaired1." --outSAMunmapped Within --outSAMtype BAM Unsorted --outSAMattributes All --readFilesCommand zcat >> ""$MAPPING_DIR"/"$i".logs" 2>>$WORK_DIR/ERRORS.log &&
+		STAR --genomeDir "$GENOME_DIR" --genomeLoad LoadAndKeep --runThreadN "$THREADS" --readFilesIn $(echo "$READ2") --outFileNamePrefix ""$MAPPING_DIR"/"$i".unpaired2." --outSAMunmapped Within --outSAMtype BAM Unsorted --outSAMattributes All --readFilesCommand zcat >> ""$MAPPING_DIR"/"$i".logs" 2>>$WORK_DIR/ERRORS.log
+		elif [[ "$JOB" == "HISAT2" ]] && [[ "$FASTQ_TYPE" == "TRIMMOMATIC-trimmed_FASTQ_files" ]]; then
+		READS=$(find ""$WORK_DIR"/RUNS/"$RUN"/FASTQ_TRIMMED" -regex ".*\/"$i"_\(R1\|R2\)_"$RUN"_merged_trimmed_paired\.fastq\.gz" | sort | uniq | tr "\n" " ")
+		READ1=$(echo "$READS" | awk '{print $1}')
+                READ2=$(echo "$READS" | awk '{print $2}')
+		hisat2 -p "$THREADS" -x ""$GENOME_DIR"/genome" -1 $(echo "$READ1") -2 $(echo "$READ2") -S ""$MAPPING_DIR"/"$i".paired.sam" >> ""$MAPPING_DIR"/"$i".logs" 2>&1 &&
+		READS=$(find ""$WORK_DIR"/RUNS/"$RUN"/FASTQ_TRIMMED" -regex ".*\/"$i"_\(R1\|R2\)_"$RUN"_merged_trimmed_unpaired\.fastq\.gz" | sort | uniq | tr "\n" " ")
+                READ1=$(echo "$READS" | awk '{print $1}')
+                READ2=$(echo "$READS" | awk '{print $2}')
+		hisat2 -p "$THREADS" -x ""$GENOME_DIR"/genome" -U $(echo "$READ1") -S ""$MAPPING_DIR"/"$i".unpaired1.sam" >> ""$MAPPING_DIR"/"$i".logs" 2>&1 &&
+		hisat2 -p "$THREADS" -x ""$GENOME_DIR"/genome" -U $(echo "$READ2") -S ""$MAPPING_DIR"/"$i".unpaired2.sam" >> ""$MAPPING_DIR"/"$i".logs" 2>&1
+		fi
+	wait
+	) &
+	if [[ "$FASTQ_TYPE" == "Original_FASTQ_files" ]]; then
+		if [[ "$JOB" == "HISAT2" ]]; then
+			f_parallel --multiplier=6
+		elif [[ "$JOB" == "STAR" ]]; then
+			f_parallel --multiplier=4
+		fi
+	elif [[ "$FASTQ_TYPE" == "TRIMMOMATIC-trimmed_FASTQ_files" ]]; then
+		if [[ "$JOB" == "HISAT2" ]]; then
+			f_parallel --multiplier=3
+		elif [[ "$JOB" == "STAR" ]]; then
+			f_parallel --multiplier=2
+		fi
+	fi
+	done
+	wait
+		if [[ "$JOB" == "STAR" ]]; then
+			STAR --genomeDir "$GENOME_DIR" --genomeLoad Remove >> ""$WORK_DIR"/"$APPNAME".log" 2>&1
+		fi
+	COUNTER=0
+	for i in ${aSAMPLES[@]}
+	do
+	set +e
+	let COUNTER++
+	eval ${SETMODE}
+	(
+	echo "$(echo "print(int(round("$COUNTER"./"$SAMPLESN"*100,0)))" | python)" | dialog --colors --gauge "BAM files (\Zb\Z4"$JOB"\Zn) are being generated with \Zb\Z4SAMTOOLS\Zn...\nThe results will be stored in:\n\Zb\Z4"$MAPPING_DIR"\Zn directory.\nRun ID: \Zb\Z4"$RUN"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nSample: \Zb\Z2"$i"\Zn (\Zb\Z4"$COUNTER"\Zn of \Zb\Z4"$SAMPLESN"\Zn)." 13 70 0 2>&1 >/dev/tty
+		if [[ "$JOB" == "STAR" ]] && [[ "$FASTQ_TYPE" == "Original_FASTQ_files" ]]; then
+		mv ""$MAPPING_DIR"/"$i".Aligned.out.bam" ""$MAPPING_DIR"/"$i".bam" 2>>""$MAPPING_DIR"/"$i".logs"
+		elif [[ "$JOB" == "HISAT2" ]] && [[ "$FASTQ_TYPE" == "Original_FASTQ_files" ]]; then
+		samtools view -@ "$THREADS" -bS ""$MAPPING_DIR"/"$i".sam" -o ""$MAPPING_DIR"/"$i".bam" 2>>""$MAPPING_DIR"/"$i".logs"
+		elif [[ "$JOB" == "STAR" ]] && [[ "$FASTQ_TYPE" == "TRIMMOMATIC-trimmed_FASTQ_files" ]]; then
+		mv ""$MAPPING_DIR"/"$i".paired.Aligned.out.bam" ""$MAPPING_DIR"/"$i".paired.bam" 2>>""$MAPPING_DIR"/"$i".logs" &&
+		mv ""$MAPPING_DIR"/"$i".unpaired1.Aligned.out.bam" ""$MAPPING_DIR"/"$i".unpaired1.bam" 2>>""$MAPPING_DIR"/"$i".logs" &&
+		mv ""$MAPPING_DIR"/"$i".unpaired2.Aligned.out.bam" ""$MAPPING_DIR"/"$i".unpaired2.bam" 2>>""$MAPPING_DIR"/"$i".logs" &&
+		samtools merge ""$MAPPING_DIR"/"$i".bam" ""$MAPPING_DIR"/"$i".paired.bam" ""$MAPPING_DIR"/"$i".unpaired1.bam" ""$MAPPING_DIR"/"$i".unpaired2.bam" 2>>""$MAPPING_DIR"/"$i".logs"
+		elif [[ "$JOB" == "HISAT2" ]] && [[ "$FASTQ_TYPE" == "TRIMMOMATIC-trimmed_FASTQ_files" ]]; then
+		samtools view -@ "$THREADS" -bS ""$MAPPING_DIR"/"$i".paired.sam" -o ""$MAPPING_DIR"/"$i".paired.bam" 2>>""$MAPPING_DIR"/"$i".logs" &&
+                samtools view -@ "$THREADS" -bS ""$MAPPING_DIR"/"$i".unpaired1.sam" -o ""$MAPPING_DIR"/"$i".unpaired1.bam" 2>>""$MAPPING_DIR"/"$i".logs" &&
+                samtools view -@ "$THREADS" -bS ""$MAPPING_DIR"/"$i".unpaired2.sam" -o ""$MAPPING_DIR"/"$i".unpaired2.bam" 2>>""$MAPPING_DIR"/"$i".logs" &&
+                samtools merge ""$MAPPING_DIR"/"$i".bam" ""$MAPPING_DIR"/"$i".paired.bam" ""$MAPPING_DIR"/"$i".unpaired1.bam" ""$MAPPING_DIR"/"$i".unpaired2.bam" 2>>""$MAPPING_DIR"/"$i".logs"
+		fi
+		mv ""$MAPPING_DIR"/"$i".bam" ""$MAPPING_DIR"/"$i".bam.tmp"
+		gatk --java-options -XX:ParallelGCThreads="$THREADS" AddOrReplaceReadGroups --VALIDATION_STRINGENCY SILENT -I ""$MAPPING_DIR"/"$i".bam.tmp" -O ""$MAPPING_DIR"/"$i".bam" -RGLB "$RUN" -RGPL Illumina -RGPU "$RUN" -RGSM "$i" >> ""$MAPPING_DIR"/"$i".logs" 2>&1 &&
+		rm -rf ""$MAPPING_DIR"/"$i".bam.tmp"
+		wait
+		) &
+        f_parallel
+        done
+        wait
+	COUNTER=0
+        for i in ${aSAMPLES[@]}
+        do
+	set +e
+	let COUNTER++
+	eval ${SETMODE}
+        (
+	echo "$(echo "print(int(round("$COUNTER"./"$SAMPLESN"*100,0)))" | python)" | dialog --colors --gauge "BAM files (\Zb\Z4"$JOB"\Zn) are being sorted with \Zb\Z4SAMTOOLS\Zn...\nThe results will be stored in:\n\Zb\Z4"$MAPPING_DIR"\Zn directory.\nRun ID: \Zb\Z4"$RUN"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nSample: \Zb\Z2"$i"\Zn (\Zb\Z4"$COUNTER"\Zn of \Zb\Z4"$SAMPLESN"\Zn)." 13 70 0 2>&1 >/dev/tty
+	unset EXITCODE
+	unset COUNTER2
+	until [[ "$EXITCODE" == 0 ]] || [[ "$COUNTER2" == 3 ]]
+	do
+	set +e
+	let COUNTER2++
+	eval ${SETMODE}
+	samtools sort -@ "$THREADS" ""$MAPPING_DIR"/"$i".bam" -T "$TMPDIR" -o ""$MAPPING_DIR"/"$i"_sorted.bam" >> ""$MAPPING_DIR"/"$i".logs" 2>&1
+	EXITCODE="$?"
+	done
+	wait
+	) &
+	f_parallel
+	done
+        wait
+	COUNTER=0
+	for i in ${aSAMPLES[@]}
+        do
+	set +e
+	let COUNTER++
+	eval ${SETMODE}
+        (
+	echo "$(echo "print(int(round("$COUNTER"./"$SAMPLESN"*100,0)))" | python)" | dialog --colors --gauge "BAM files (\Zb\Z4"$JOB"\Zn) are being indexed with \Zb\Z4SAMTOOLS\Zn...\nThe results will be stored in:\n\Zb\Z4"$MAPPING_DIR"\Zn directory.\nRun ID: \Zb\Z4"$RUN"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nSample: \Zb\Z2"$i"\Zn (\Zb\Z4"$COUNTER"\Zn of \Zb\Z4"$SAMPLESN"\Zn)." 13 70 0 2>&1 >/dev/tty
+		samtools index -@ "$THREADS" ""$MAPPING_DIR"/"$i"_sorted.bam" >> ""$MAPPING_DIR"/"$i".logs" 2>>$WORK_DIR/ERRORS.log
+		wait
+	) &
+	f_parallel
+	done
+	wait
+	COUNTER=0
+	for i in ${aSAMPLES[@]}
+        	do
+		set +e
+		let COUNTER++
+		eval ${SETMODE}
+        	(
+		echo "$(echo "print(int(round("$COUNTER"./"$SAMPLESN"*100,0)))" | python)" | dialog --colors --gauge "Reads mapped to the splice sites (\Zb\Z4"$JOB"\Zn - with duplicates) are being extracted with \Zb\Z4REGTOOLS\Zn...\nThe results will be stored in:\n\Zb\Z4"$MAPPING_DIR"\Zn directory.\nRun ID: \Zb\Z4"$RUN"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nSample: \Zb\Z2"$i"\Zn (\Zb\Z4"$COUNTER"\Zn of \Zb\Z4"$SAMPLESN"\Zn)." 14 80 0 2>&1 >/dev/tty
+		regtools junctions extract ""$MAPPING_DIR"/"$i"_sorted.bam" -s 0 -o ""$MAPPING_DIR"/"$i".with_duplicates.junctions.bed" 2>>""$MAPPING_DIR"/"$i".logs"
+		wait
+        	) &
+        	f_parallel
+        	done
+        	wait
+	COUNTER=0
+	for i in ${aSAMPLES[@]}
+        	do
+		set +e
+		let COUNTER++
+		eval ${SETMODE}
+		(
+		unset EXITCODE
+		unset COUNTER2
+		until [[ "$EXITCODE" == 0 ]] || [[ "$COUNTER2" == 3 ]]
+		do
+		set +e
+		let COUNTER2++
+		eval ${SETMODE}
+		echo "$(echo "print(int(round("$COUNTER"./"$SAMPLESN"*100,0)))" | python)" | dialog --colors --gauge "BAM files (\Zb\Z4"$JOB"\Zn) are being deduplicated with \Zb\Z4PICARD MarkDuplicates\Zn...\nThe results will be stored in:\n\Zb\Z4"$MAPPING_DIR"\Zn directory.\nRun ID: \Zb\Z4"$RUN"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nSample: \Zb\Z2"$i"\Zn (\Zb\Z4"$COUNTER"\Zn of \Zb\Z4"$SAMPLESN"\Zn)." 13 80 0 2>&1 >/dev/tty
+        	gatk --java-options -XX:ParallelGCThreads="$THREADS" MarkDuplicates --REMOVE_DUPLICATES true --ASSUME_SORT_ORDER coordinate -I ""$MAPPING_DIR"/"$i"_sorted.bam" -O ""$MAPPING_DIR"/"$i"_sorted.no_dups.bam" -M ""$TMPDIR"/"$JOB"."$i".MD.log" >/dev/null 2>&1
+		EXITCODE="$?"
+		done
+		cat ""$TMPDIR"/"$JOB"."$i".MD.log" >> ""$MAPPING_DIR"/"$i".logs" 
+		wait
+		) &
+		f_parallel #--limit=30
+        	done
+        	wait
+	COUNTER=0
+	for i in ${aSAMPLES[@]}
+        	do
+		set +e
+		let COUNTER++
+		eval ${SETMODE}
+        	(
+		echo "$(echo "print(int(round("$COUNTER"./"$SAMPLESN"*100,0)))" | python)" | dialog --colors --gauge "Deduplicated BAM files (\Zb\Z4"$JOB"\Zn) are being indexed with \Zb\Z4SAMTOOLS\Zn...\nThe results will be stored in:\n\Zb\Z4"$MAPPING_DIR"\Zn directory.\nRun ID: \Zb\Z4"$RUN"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nSample: \Zb\Z2"$i"\Zn (\Zb\Z4"$COUNTER"\Zn of \Zb\Z4"$SAMPLESN"\Zn)." 13 70 0 2>&1 >/dev/tty
+		samtools index -@ "$THREADS" ""$MAPPING_DIR"/"$i"_sorted.no_dups.bam" >> ""$MAPPING_DIR"/"$i".logs" 2>>$WORK_DIR/ERRORS.log
+		wait
+		) &
+		f_parallel
+		done
+		wait
+	COUNTER=0
+        for i in ${aSAMPLES[@]}
+        	do
+		set +e
+		let COUNTER++
+		eval ${SETMODE}
+        	(
+        	echo "$(echo "print(int(round("$COUNTER"./"$SAMPLESN"*100,0)))" | python)" | dialog --colors --gauge "Reads mapped to the splice sites (\Zb\Z4"$JOB"\Zn - without duplicates) are being extracted with \Zb\Z4REGTOOLS\Zn...\nThe results will be stored in:\n\Zb\Z4"$MAPPING_DIR"\Zn directory.\nRun ID: \Zb\Z4"$RUN"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nSample: \Zb\Z2"$i"\Zn (\Zb\Z4"$COUNTER"\Zn of \Zb\Z4"$SAMPLESN"\Zn)." 14 80 0 2>&1 >/dev/tty
+		regtools junctions extract ""$MAPPING_DIR"/"$i"_sorted.no_dups.bam" -s 0 -o ""$MAPPING_DIR"/"$i".without_duplicates.junctions.bed" 2>>""$MAPPING_DIR"/"$i".logs"
+        	wait
+		) &
+        	f_parallel
+        	done
+        	wait
+	COUNTER=0
+        for i in ${aSAMPLES[@]}
+                do
+		set +e
+                let COUNTER++
+		eval ${SETMODE}
+                (
+                echo "$(echo "print(int(round("$COUNTER"./"$SAMPLESN"*100,0)))" | python)" | dialog --colors --gauge "Insert size metrics of bam files (\Zb\Z4"$JOB"\Zn) are being gathered with \Zb\Z4 GATK CollectInsertSizeMetrics\Zn...\nThe results will be stored in:\n\Zb\Z4"$MAPPING_DIR"\Zn directory.\nRun ID: \Zb\Z4"$RUN"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nSample: \Zb\Z2"$i"\Zn (\Zb\Z4"$COUNTER"\Zn of \Zb\Z4"$SAMPLESN"\Zn)." 14 80 0 2>&1 >/dev/tty
+                gatk --java-options -XX:ParallelGCThreads="$THREADS" CollectInsertSizeMetrics -I ""$MAPPING_DIR"/"$i"_sorted.bam" -O ""$MAPPING_DIR"/"$i"_sorted.bam.insert_size_metrics.txt" -H ""$MAPPING_DIR"/"$i"_sorted.bam.insert_size_metrics.pdf" >> ""$MAPPING_DIR"/"$i".logs" 2>&1
+		gatk --java-options -XX:ParallelGCThreads="$THREADS" CollectInsertSizeMetrics -I ""$MAPPING_DIR"/"$i"_sorted.no_dups.bam" -O ""$MAPPING_DIR"/"$i"_sorted.no_dups.bam.insert_size_metrics.txt" -H ""$MAPPING_DIR"/"$i"_sorted.no_dups.bam.insert_size_metrics.pdf" >> ""$MAPPING_DIR"/"$i".logs" 2>&1
+sed -n 's/\t/;/g;7,8p' ""$MAPPING_DIR"/"$i"_sorted.bam.insert_size_metrics.txt" > ""$MAPPING_DIR"/"$i"_sorted.bam.insert_size_metrics.csv"
+sed -n 's/\t/;/g;7,8p' ""$MAPPING_DIR"/"$i"_sorted.no_dups.bam.insert_size_metrics.txt" > ""$MAPPING_DIR"/"$i"_sorted.no_dups.bam.insert_size_metrics.csv"
+                wait
+                ) &
+                f_parallel
+                done
+                wait
+
+		if [[ ! -e ""$WORK_DIR"/REFSEQS/"$GENOME".fa" ]] || [[ ! -e ""$WORK_DIR"/REFSEQS/"$GENOME".fa.fai" ]] || [[ ! -e ""$WORK_DIR"/REFSEQS/"$GENOME".dict" ]]; then
+			if [[ -e ""$WORK_DIR"/REFSEQS/"$GENOME".fa.gz" ]]; then
+				dialog --colors --infobox "The\Zb\Z4""$WORK_DIR"/REFSEQS/"$GENOME".fa"\Zn file is being indexed with \Zb\Z4SAMTOOLS\Zn.\nThe dictionary of the \Zb\Z4""$WORK_DIR"/REFSEQS/"$GENOME".fa"\Zn file is being created with \Zb\Z4GATK\Zn." 0 0 2>&1 >/dev/tty
+				gzip -dc ""$WORK_DIR"/REFSEQS/"$GENOME".fa.gz" > ""$WORK_DIR"/REFSEQS/"$GENOME".fa" &&
+				rm -rf ""$WORK_DIR"/REFSEQS/"$GENOME".fa.fai"
+				samtools faidx ""$WORK_DIR"/REFSEQS/"$GENOME".fa" > ""$WORK_DIR"/REFSEQS/"$GENOME".log" 2>>$WORK_DIR/ERRORS.log
+				rm -rf ""$WORK_DIR"/REFSEQS/"$GENOME".dict"
+				gatk --java-options -XX:ParallelGCThreads="$THREADS" CreateSequenceDictionary -R ""$WORK_DIR"/REFSEQS/"$GENOME".fa" >> ""$WORK_DIR"/REFSEQS/"$GENOME".log" 2>&1
+			elif [[ ! -e ""$WORK_DIR"/REFSEQS/"$GENOME".fa.gz" ]]; then
+				dialog --colors --msgbox "\Zb\Z1The\Z4""$WORK_DIR"/REFSEQS/"$GENOME".fa.gz"\Z1 file does not exist." 0 0 2>&1 >/dev/tty
+				touch ""$TMPDIR"/job_error."$RUN""
+				return 1
+			fi
+		fi
+	COUNTER=0
+        for i in ${aSAMPLES[@]}
+                do
+		set +e
+                let COUNTER++
+		eval ${SETMODE}
+#                (
+                echo "$(echo "print(int(round("$COUNTER"./"$SAMPLESN"*100,0)))" | python)" | dialog --colors --gauge "Removing SAM files and temporary files (\Zb\Z4"$JOB"\Zn).\nRun ID: \Zb\Z4"$RUN"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nSample: \Zb\Z2"$i"\Zn (\Zb\Z4"$COUNTER"\Zn of \Zb\Z4"$SAMPLESN"\Zn)." 14 80 0 2>&1 >/dev/tty
+        if [[ "$JOB" == "STAR" ]]; then
+                rm -rf "$MAPPING_DIR"/"$i"*.Aligned.out.bam
+                rm -rf "$MAPPING_DIR"/"$i".bam
+                rm -rf "$MAPPING_DIR"/"$i".paired*.bam
+                rm -rf "$MAPPING_DIR"/"$i".unpaired*.bam
+        elif [[ "$JOB" == "HISAT2" ]]; then
+                rm -rf "$MAPPING_DIR"/"$i"*.sam
+                rm -rf "$MAPPING_DIR"/"$i".bam
+                rm -rf "$MAPPING_DIR"/"$i".paired*.bam
+                rm -rf "$MAPPING_DIR"/"$i".unpaired*.bam
+        fi 
+                wait
+ #               ) &
+ #               f_parallel
+                done
+                wait
+	done
+	wait
+done
+wait
+}
+function f_seq_comparing() {
+aSAMPLES=($(ls -A ""$WORK_DIR"/RUNS/"$RUN"/FASTQ" | egrep ".*\.fastq\.gz$" | awk 'NF{NF-=3}1' FS='_' OFS='_' | sort | uniq))
+SAMPLESN=$(printf '%s\n' "${aSAMPLES[@]}" | wc -l)
+		if [[ ! -e ""$TMPDIR_BIG"/"$GTF_DEC"" ]]; then
+                f_decompress ""$WORK_DIR"/REFSEQS" "$GTF"
+                GTF_DEC="$NAME_DEC"
+                fi
+		aSELECTED_FASTQS=($(cat $(find "$TMPDIR" -regex ".*\/runjob_"$FUNCNAME"#"$RUN"_.*") | awk -F ":" '/FASTQS:/ {print $2}' | sort -u))
+		for FASTQ_TYPE in "${aSELECTED_FASTQS[@]}"
+		do
+		if [[ "$FASTQ_TYPE" == "Original_FASTQ_files" ]]; then
+			MAPPINGS="MAPPINGS"
+		elif [[ "$FASTQ_TYPE" == "TRIMMOMATIC-trimmed_FASTQ_files" ]]; then
+			MAPPINGS="MAPPINGS_TRIMMED"
+		fi
+		aMAPPERS=($(awk -F ":" '/MAPPERS:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE""))
+		for MAPPER in "${aMAPPERS[@]}"
+		do
+			MAPPING_DIR=""$WORK_DIR"/RUNS/"$RUN"/"$MAPPINGS"/"$GENOME"/"$MAPPER""
+			COMPARISON_DIR=""$MAPPING_DIR"/COMPARISON"
+			QUALIMAP_DIR=""$COMPARISON_DIR"/QUALIMAP"
+			rm -rf ""$QUALIMAP_DIR""
+			mkdir -p ""$QUALIMAP_DIR"/BAMQC"
+			mkdir -p ""$QUALIMAP_DIR"/RNASEQ"
+			aBAMS=($(awk -F ":" '/BAMS:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE""))
+			for SELECTED_BAM in "${aBAMS[@]}"
+			do
+				if [[ "$SELECTED_BAM" == "BAMs_w_dups" ]]; then
+				BAM="sorted"
+				elif [[ "$SELECTED_BAM" == "BAMs_wo_dups" ]]; then
+				BAM="sorted.no_dups"
+				else
+				return 1
+				fi
+			aBEDFILES=($(awk -F ":" '/aBEDFILES:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE""))
+			BED=$(awk -F ":" '/BEDFILE:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE"")
+			THRESHOLD=$(awk -F ":" '/THRESHOLD:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE"")
+			SDTIMES=$(awk -F ":" '/SDTIMES:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE"")
+			SUBSET=$(awk -F ":" '/SUBSET:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE"")
+				f_seq_comparing_exec
+			done
+			wait
+		done
+		wait
+	done
+	wait
+}
+function f_seq_comparing_exec {
+			f_threads "$SAMPLESN"
+			export JAVA_OPTS=" -XX:ParallelGCThreads="$THREADS" -Djava.awt.headless=true -Djava.io.tmpdir="$TMPDIR""
+			COUNTER=0
+			QMODE=bamqc
+        		for i in ${aSAMPLES[@]}
+				do
+				set +e
+				let COUNTER++
+				eval ${SETMODE}
+				(
+				unset COUNTER2
+				until [[ $(find ""$QUALIMAP_DIR"/BAMQC/" -regex ".*qualimap."$i"_"$BAM".report/qualimap."$QMODE"."$RUN"."$MAPPINGS"."$MAPPER"."$GENOME"."$BAM"."$i".report.pdf" | wc -l) == 1 ]] || [[ "$COUNTER2" == 3 ]]
+					do
+					set +e
+					let COUNTER2++
+					eval ${SETMODE}
+					echo "$(echo "print(int(round("$COUNTER"./"$SAMPLESN"*100,0)))" | python)" | dialog --colors --gauge "Analysis of DNA/RNA mapping results (\Zb\Z4"$MAPPER"\Zn) is being performed...\n(App: \Zb\Z4QUALIMAP bamqc\Zn)\nRun ID: \Zb\Z4"$RUN"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nBAM file type: \Zb\Z4"$SELECTED_BAM"\Zn\nSample: \Zb\Z2"$i"\Zn (\Zb\Z4"$COUNTER"\Zn of \Zb\Z4"$SAMPLESN"\Zn)." 12 70 0 2>&1 >/dev/tty
+qualimap bamqc -bam ""$MAPPING_DIR"/"$i"_"$BAM".bam" -outfile qualimap."$QMODE"."$RUN"."$MAPPINGS"."$MAPPER"."$GENOME"."$BAM"."$i".report.pdf -outformat PDF -outdir ""$QUALIMAP_DIR"/BAMQC/qualimap."$i"_"$BAM".report" -gd HUMAN -ip >>""$QUALIMAP_DIR"/BAMQC/"$i"_"$BAM".logs" 2>&1; grep "ERROR:" ""$QUALIMAP_DIR"/BAMQC/"$i"_"$BAM".logs" >>$WORK_DIR/ERRORS.log
+					done
+				wait
+				) &
+				f_parallel
+				done
+				wait
+			COUNTER=0
+			f_threads "$SAMPLESN"
+			for i in ${aSAMPLES[@]}
+				do
+				set +e
+				let COUNTER++
+				eval ${SETMODE}
+				(
+				echo "$(echo "print(int(round("$COUNTER"./"$SAMPLESN"*100,0)))" | python)" | dialog --colors --gauge "BAM files sorting (by name) (\Zb\Z4"$MAPPER"\Zn) is being performed...\n(App: \Zb\Z4SAMTOOLS\Zn)\nRun ID: \Zb\Z4"$RUN"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nBAM file type: \Zb\Z4"$SELECTED_BAM"\Zn\nSample: \Zb\Z2"$i"\Zn (\Zb\Z4"$COUNTER"\Zn of \Zb\Z4"$SAMPLESN"\Zn)." 12 70 0 2>&1 >/dev/tty
+						unset EXITCODE
+						unset COUNTER2
+                                                until [[ "$EXITCODE" == 0 ]] || [[ "$COUNTER2" == 3 ]]
+                                                do
+						set +e
+						let COUNTER2++
+						eval ${SETMODE}
+						samtools sort -@ "$THREADS" -n ""$MAPPING_DIR"/"$i"_"$BAM".bam" -T "$TMPDIR" -o ""$MAPPING_DIR"/"$i".name."$BAM".bam" >>""$QUALIMAP_DIR"/RNASEQ/"$i"_"$BAM".logs" 2>&1
+						EXITCODE="$?"
+						done
+ 						wait
+                                ) &
+                                f_parallel
+                                done
+                                wait
+			f_threads "$SAMPLESN"
+			export JAVA_OPTS=" -XX:ParallelGCThreads="$THREADS" -Djava.awt.headless=true -Djava.io.tmpdir="$TMPDIR""
+			COUNTER=0
+			QMODE=rnaseq
+			if [[ -n $(ls ""$TMPDIR_BIG"/"$GTF_DEC"" | egrep "\.gff$") ]]; then
+				GTF_DEC_OLD="$GTF_DEC"	
+				GTF_DEC=$(echo $GTF_DEC_OLD | sed 's/\.gff$/\.gtf/')
+				gffread ""$TMPDIR_BIG"/"$GTF_DEC_OLD"" -T -o ""$TMPDIR_BIG"/"$GTF_DEC""
+			fi
+
+			for i in ${aSAMPLES[@]}
+				do
+				set +e
+				let COUNTER++
+				eval ${SETMODE}
+				(
+				unset COUNTER2
+				until [[ $(find ""$QUALIMAP_DIR"/RNASEQ/" -regex ".*qualimap."$i"_"$BAM".report/qualimap."$QMODE"."$RUN"."$MAPPINGS"."$MAPPER"."$GENOME"."$BAM"."$i".report.pdf" | wc -l) == 1 ]] || [[ "$COUNTER2" == 3 ]]
+					do
+					set +e
+					let COUNTER2++
+					eval ${SETMODE}
+					echo "$(echo "print(int(round("$COUNTER"./"$SAMPLESN"*100,0)))" | python)" | dialog --colors --gauge "Analysis of DNA/RNA mapping results (\Zb\Z4"$MAPPER"\Zn) is being performed...\n(App: \Zb\Z4QUALIMAP rnaseq\Zn)\nRun ID: \Zb\Z4"$RUN"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nBAM file type: \Zb\Z4"$SELECTED_BAM"\Zn\nSample: \Zb\Z2"$i"\Zn (\Zb\Z4"$COUNTER"\Zn of \Zb\Z4"$SAMPLESN"\Zn)." 12 70 0 2>&1 >/dev/tty
+				qualimap rnaseq -bam ""$MAPPING_DIR"/"$i".name."$BAM".bam" --sorted -gtf ""$TMPDIR_BIG"/"$GTF_DEC"" -outfile qualimap."$QMODE"."$RUN"."$MAPPINGS"."$MAPPER"."$GENOME"."$BAM"."$i".report.pdf -outformat PDF --paired -outdir ""$QUALIMAP_DIR"/RNASEQ/qualimap."$i"_"$BAM".report" >>""$QUALIMAP_DIR"/RNASEQ/"$i"_"$BAM".logs" 2>&1; grep "ERROR:" ""$QUALIMAP_DIR"/BAMQC/"$i"_"$BAM".logs" >>$WORK_DIR/ERRORS.log
+					done
+				wait
+				) &
+				f_parallel
+				done
+				wait
+			unset QMODE
+			COUNTER=0
+			f_threads "$SAMPLESN"
+			for i in ${aSAMPLES[@]}
+				do
+				set +e
+				let COUNTER++
+				eval ${SETMODE}
+				(
+				echo "$(echo "print(int(round("$COUNTER"./"$SAMPLESN"*100,0)))" | python)" | dialog --colors --gauge "Analysis of DNA/RNA mapping results (\Zb\Z4"$MAPPER"\Zn) is being performed...\n(Apps: \Zb\Z4SAMTOOLS & GATK\Zn)\nRun ID: \Zb\Z4"$RUN"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nBAM file type: \Zb\Z4"$SELECTED_BAM"\Zn\nSample: \Zb\Z2"$i"\Zn (\Zb\Z4"$COUNTER"\Zn of \Zb\Z4"$SAMPLESN"\Zn)." 12 70 0 2>&1 >/dev/tty
+				samtools view -@ "$THREADS" -F4 -f64 ""$MAPPING_DIR"/"$i".name."$BAM".bam" | cut -f1 | uniq | wc -l > ""$TMPDIR"/MAPPED1."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"" &
+				samtools view -@ "$THREADS" -F4 -f128 ""$MAPPING_DIR"/"$i".name."$BAM".bam" | cut -f1 | uniq | wc -l > ""$TMPDIR"/MAPPED2."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"" &
+				cat ""$QUALIMAP_DIR"/RNASEQ/qualimap."$i"_"$BAM".report/rnaseq_qc_results.txt" | grep "not aligned" | awk '{print $NF}' | sed 's/,//g' > ""$TMPDIR"/UNMAPPED."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"" &
+				samtools view -@ "$THREADS" -F4 ""$MAPPING_DIR"/"$i".name."$BAM".bam" | egrep "NH:i:1" | cut -f1 | uniq | wc -l > ""$TMPDIR"/SINGLE_HITS."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"" &
+				samtools view -@ "$THREADS" -F4 -f64 ""$MAPPING_DIR"/"$i".name."$BAM".bam" | egrep "NM:i:[0]" | cut -f1 | uniq | wc -l > ""$TMPDIR"/ZERO_EDIT1."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"" &
+				samtools view -@ "$THREADS" -F4 -f128 ""$MAPPING_DIR"/"$i".name."$BAM".bam" | egrep "NM:i:[0]" | cut -f1 | uniq | wc -l > ""$TMPDIR"/ZERO_EDIT2."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"" &
+				samtools view -@ "$THREADS" -F4 -f64 ""$MAPPING_DIR"/"$i".name."$BAM".bam" | egrep "NM:i:[^0]" | cut -f1 | uniq | wc -l > ""$TMPDIR"/NON_0_EDIT1."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"" &
+				samtools view -@ "$THREADS" -F4 -f128 ""$MAPPING_DIR"/"$i".name."$BAM".bam" | egrep "NM:i:[^0]" | cut -f1 | uniq | wc -l > ""$TMPDIR"/NON_0_EDIT2."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"" &
+						if [[ "$SELECTED_BAM" == "BAMs_w_dups" ]]; then
+						cat ""$MAPPING_DIR"/"$i".with_duplicates.junctions.bed" | wc -l > ""$TMPDIR"/JUNCTIONS."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"" &
+                                        	awk '{sum += $5} END {print sum}' ""$MAPPING_DIR"/"$i".with_duplicates.junctions.bed" > ""$TMPDIR"/JUNCTIONS_SUPPORT."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"" &
+						elif [[ "$SELECTED_BAM" == "BAMs_wo_dups" ]]; then
+						cat ""$MAPPING_DIR"/"$i".without_duplicates.junctions.bed" | wc -l > ""$TMPDIR"/JUNCTIONS."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"" &
+						awk '{sum += $5} END {print sum}' ""$MAPPING_DIR"/"$i".without_duplicates.junctions.bed" > ""$TMPDIR"/JUNCTIONS_SUPPORT."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"" &
+						fi
+					if [[ "$MAPPER" == "STAR" || "$MAPPER" == "HISAT2" ]]; then
+					samtools view -@ "$THREADS" -F4 -f64 ""$MAPPING_DIR"/"$i".name."$BAM".bam" | awk.match.sh > ""$TMPDIR"/SPLIT_READS1."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"" &
+					samtools view -@ "$THREADS" -F4 -f128 ""$MAPPING_DIR"/"$i".name."$BAM".bam" | awk.match.sh > ""$TMPDIR"/SPLIT_READS2."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"" &
+					fi
+				samtools depth ""$MAPPING_DIR"/"$i"_"$BAM".bam" | awk.if.sh | median_mean_sd.r > ""$TMPDIR"/AVERAGE_DEPTH_WO0."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"" &
+				if [[ -f "$BED" ]]; then
+					samtools depth ""$MAPPING_DIR"/"$i"_"$BAM".bam" -b "$BED" | awk '{print $3}' | median_mean_sd.r > ""$TMPDIR"/AVERAGE_DEPTH_BED."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"" &
+					gatk --java-options -XX:ParallelGCThreads="$THREADS" CountReads -R ""$WORK_DIR"/REFSEQS/"$GENOME".fa" -I ""$MAPPING_DIR"/"$i"_"$BAM".bam" -L "$BED" 2>>""$MAPPING_DIR"/"$i".logs" | tail -n1 > ""$TMPDIR"/ONTARGET_READS."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"" &
+				fi
+				gatk --java-options -XX:ParallelGCThreads="$THREADS" CountReads -R ""$WORK_DIR"/REFSEQS/"$GENOME".fa" -I ""$MAPPING_DIR"/"$i"_"$BAM".bam" 2>>""$MAPPING_DIR"/"$i".logs" | tail -n1 > ""$TMPDIR"/ALL_READS."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"" &
+				wait
+				rm -rf ""$MAPPING_DIR"/"$i".name."$BAM".bam"
+				) &
+				f_parallel --multiplier=2
+				done
+				wait
+			for i in ${aSAMPLES[@]}
+				do
+				MAPPED1=$(cat ""$TMPDIR"/MAPPED1."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"")
+				MAPPED2=$(cat ""$TMPDIR"/MAPPED2."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"")
+				UNMAPPED=$(cat ""$TMPDIR"/UNMAPPED."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"")
+				MAPPED_ALL=$(echo "$(($MAPPED1+$MAPPED2))") 
+				ALL_MATES=$(echo "$(($MAPPED_ALL+$UNMAPPED))")
+				PERCENT_MAPPED=$(echo "print(round("$MAPPED_ALL"/"$ALL_MATES".*100,2))" | python)
+				SINGLE_HITS=$(cat ""$TMPDIR"/SINGLE_HITS."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"")
+				PERCENT_SINGLE_HITS=$(echo "print(round("$SINGLE_HITS"/"$MAPPED_ALL".*100,2))" | python)
+				ZERO_EDIT1=$(cat ""$TMPDIR"/ZERO_EDIT1."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"")
+				ZERO_EDIT2=$(cat ""$TMPDIR"/ZERO_EDIT2."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"")
+				NON_0_EDIT1=$(cat ""$TMPDIR"/NON_0_EDIT1."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"")
+				NON_0_EDIT2=$(cat ""$TMPDIR"/NON_0_EDIT2."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"")
+				ZERO_EDITS=$(echo "$(($ZERO_EDIT1+$ZERO_EDIT2))")
+				PERCENT_ZERO_EDITS=$(echo "print(round("$ZERO_EDITS"/"$MAPPED_ALL".*100,2))" | python)
+				NON_0_EDITS=$(echo "$(($NON_0_EDIT1+$NON_0_EDIT2))")
+				ALL_EDITS=$(echo "$(($ZERO_EDITS+$NON_0_EDITS))")
+				ALL_MATES_WITH_NON_0=$(echo "$(($ALL_EDITS+$UNMAPPED))")
+				MAPPED_DISCONCORDANTLY=$(echo "$(($ALL_MATES_WITH_NON_0-$ALL_MATES))")
+				SPLIT_READS1=$(cat ""$TMPDIR"/SPLIT_READS1."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"")
+				SPLIT_READS2=$(cat ""$TMPDIR"/SPLIT_READS2."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"")
+				SPLIT_READS=$(echo "$(($SPLIT_READS1+$SPLIT_READS2))")
+				PERCENT_SPLIT_READS=$(echo "print(round("$SPLIT_READS"/"$MAPPED_ALL".*100,2))" | python)
+				JUNCTIONS=$(cat ""$TMPDIR"/JUNCTIONS."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"")
+				JUNCTIONS_SUPPORT=$(cat ""$TMPDIR"/JUNCTIONS_SUPPORT."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"")
+				PERCENT_JUNCTION_SUPPORT=$(echo "print(round("$JUNCTIONS_SUPPORT"/"$MAPPED_ALL".*100,2))" | python)
+					if [[ "$MAPPER" == "STAR" || "$MAPPER" == "HISAT2" ]]; then
+						PERCENT_DUPLICATED_READS=$(echo "print (round($(cat ""$MAPPING_DIR"/"$i".logs" | grep "PERCENT_DUPLICATION" -A1 | sed '1d; s/\t/;/g' | awk -F ";" '{print $9}') * 100,2))" | python)
+					fi
+				AVERAGE_DEPTH_WO0_MEDIAN=$(awk '{print $1}' ""$TMPDIR"/AVERAGE_DEPTH_WO0."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"")
+				AVERAGE_DEPTH_WO0_MEAN=$(awk '{print $2}' ""$TMPDIR"/AVERAGE_DEPTH_WO0."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"")
+				AVERAGE_DEPTH_WO0_SD=$(awk '{print $3}' ""$TMPDIR"/AVERAGE_DEPTH_WO0."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"")
+				if [[ -f "$BED" ]]; then
+					AVERAGE_DEPTH_BED_MEDIAN=$(awk '{print $1}' ""$TMPDIR"/AVERAGE_DEPTH_BED."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"")
+					AVERAGE_DEPTH_BED_MEAN=$(awk '{print $2}' ""$TMPDIR"/AVERAGE_DEPTH_BED."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"")
+					AVERAGE_DEPTH_BED_SD=$(awk '{print $3}' ""$TMPDIR"/AVERAGE_DEPTH_BED."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"")
+				else
+					AVERAGE_DEPTH_BED_MEDIAN="NA"
+					AVERAGE_DEPTH_BED_MEAN="NA"
+					AVERAGE_DEPTH_BED_SD="NA"
+				fi
+				COVERAGE_MEAN=$(cat ""$QUALIMAP_DIR"/BAMQC/qualimap."$i"_"$BAM".report/genome_results.txt" | grep "paired-end adapted mean coverage" | awk '{print $NF}' | sed 's/X//;s/,//g')
+				COVERAGE_SD=$(cat ""$QUALIMAP_DIR"/BAMQC/qualimap."$i"_"$BAM".report/genome_results.txt" | grep "std coverageData" | awk '{print $NF}' | sed 's/X//;s/,//g')
+				NUMBER_OF_READS=$(cat ""$QUALIMAP_DIR"/BAMQC/qualimap."$i"_"$BAM".report/genome_results.txt" | grep "number of reads" | awk '{print $NF}' | sed 's/,//g')
+				NUMBER_OF_OVERLAPPING_READ_PAIRS=$(cat ""$QUALIMAP_DIR"/BAMQC/qualimap."$i"_"$BAM".report/genome_results.txt" | grep "number of overlapping read pairs" | awk '{print $NF}' | sed 's/,//g')
+					if [[ -z "$NUMBER_OF_OVERLAPPING_READ_PAIRS" ]]; then
+					NUMBER_OF_OVERLAPPING_READ_PAIRS=0
+					fi
+				OVERLAPPING_READ_PAIRS_PERCENT=$(echo "print(round("$NUMBER_OF_OVERLAPPING_READ_PAIRS"/"$NUMBER_OF_READS".*2*100,2))" | python)
+				MEAN_MAPPING_QUALITY=$(cat ""$QUALIMAP_DIR"/BAMQC/qualimap."$i"_"$BAM".report/genome_results.txt" | grep "mean mapping quality" | awk '{print $NF}')
+				GENERAL_ERROR_RATE_PERCENT=$(cat ""$QUALIMAP_DIR"/BAMQC/qualimap."$i"_"$BAM".report/genome_results.txt" |grep "general error rate" | awk '{print $NF*100}')
+				INSERTIONS_PERCENT=$(cat ""$QUALIMAP_DIR"/BAMQC/qualimap."$i"_"$BAM".report/genome_results.txt" | grep "mapped reads with insertion percentage" | awk '{print $NF}' | sed 's/%//')
+				DELETIONS_PERCENT=$(cat ""$QUALIMAP_DIR"/BAMQC/qualimap."$i"_"$BAM".report/genome_results.txt" | grep "mapped reads with deletion percentage" | awk '{print $NF}' | sed 's/%//')
+				HOMOPOLYMER_INDELS_PERCENT=$(cat ""$QUALIMAP_DIR"/BAMQC/qualimap."$i"_"$BAM".report/genome_results.txt" | grep "homopolymer indels" | awk '{print $NF}' | sed 's/%//')
+				READ_ORIGIN_EXONIC_PERCENT=$(cat ""$QUALIMAP_DIR"/RNASEQ/qualimap."$i"_"$BAM".report/rnaseq_qc_results.txt" | grep "exonic" | awk '{print $NF}' | sed 's/[()%]//g')
+				READ_ORIGIN_INTRONIC_PERCENT=$(cat ""$QUALIMAP_DIR"/RNASEQ/qualimap."$i"_"$BAM".report/rnaseq_qc_results.txt" | grep "intronic" | awk '{print $NF}' | sed 's/[()%]//g')
+				READ_ORIGIN_INTERGENIC_PERCENT=$(cat ""$QUALIMAP_DIR"/RNASEQ/qualimap."$i"_"$BAM".report/rnaseq_qc_results.txt" | grep "intergenic" | awk '{print $NF}' | sed 's/[()%]//g')
+				READ_ORIGIN_INTRONIC_INTERGENIC_PERCENT=$(cat ""$QUALIMAP_DIR"/RNASEQ/qualimap."$i"_"$BAM".report/rnaseq_qc_results.txt" | grep "overlapping exon" | awk '{print $NF}' | sed 's/[()%]//g')
+				COVERAGE_5_BIAS=$(cat ""$QUALIMAP_DIR"/RNASEQ/qualimap."$i"_"$BAM".report/rnaseq_qc_results.txt" | grep "5' bias" | awk '{print $NF}')
+				COVERAGE_3_BIAS=$(cat ""$QUALIMAP_DIR"/RNASEQ/qualimap."$i"_"$BAM".report/rnaseq_qc_results.txt" | grep -E "[[:space:]]+3' bias" | awk '{print $NF}')
+				MEDIAN_INSERT_SIZE=$(cat ""$MAPPING_DIR"/"$i"_"$BAM".bam.insert_size_metrics.csv" | sed '1d' | awk -F ";" '{print $1}')
+				MODE_INSERT_SIZE=$(cat ""$MAPPING_DIR"/"$i"_"$BAM".bam.insert_size_metrics.csv" | sed '1d' | awk -F ";" '{print $2}')
+				MIN_INSERT_SIZE=$(cat ""$MAPPING_DIR"/"$i"_"$BAM".bam.insert_size_metrics.csv" | sed '1d' | awk -F ";" '{print $4}')
+				MAX_INSERT_SIZE=$(cat ""$MAPPING_DIR"/"$i"_"$BAM".bam.insert_size_metrics.csv" | sed '1d' | awk -F ";" '{print $5}')
+				MEAN_INSERT_SIZE=$(cat ""$MAPPING_DIR"/"$i"_"$BAM".bam.insert_size_metrics.csv" | sed '1d' | awk -F ";" '{print $6}')
+				STANDARD_DEVIATION_INSERT_SIZE=$(cat ""$MAPPING_DIR"/"$i"_"$BAM".bam.insert_size_metrics.csv" | sed '1d' | awk -F ";" '{print $7}')
+				if [[ -f "$BED" ]] ; then
+					ONTARGET_READS=$(cat ""$TMPDIR"/ONTARGET_READS."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"")
+					ALL_READS=$(cat ""$TMPDIR"/ALL_READS."$RUN"."$GENOME"."$MAPPER"."$BAM"."$i"")
+					PERCENT_ONTARGET_READS=$(echo "print(round("$ONTARGET_READS"/"$ALL_READS".*100,2))" | python)
+				else
+					PERCENT_ONTARGET_READS="NA"
+				fi
+					echo ""$i";"$ALL_MATES";"$MAPPED_ALL";"$PERCENT_MAPPED";"$UNMAPPED";"$SINGLE_HITS";"$PERCENT_SINGLE_HITS";"$ZERO_EDITS";"$PERCENT_ZERO_EDITS";"$NON_0_EDITS";"$MAPPED_DISCONCORDANTLY";"$SPLIT_READS";"$PERCENT_SPLIT_READS";"$JUNCTIONS";"$JUNCTIONS_SUPPORT";"$PERCENT_JUNCTION_SUPPORT";"$PERCENT_DUPLICATED_READS";"$AVERAGE_DEPTH_WO0_MEDIAN";"$AVERAGE_DEPTH_WO0_MEAN";"$AVERAGE_DEPTH_WO0_SD";"$AVERAGE_DEPTH_BED_MEDIAN";"$AVERAGE_DEPTH_BED_MEAN";"$AVERAGE_DEPTH_BED_SD";"$COVERAGE_MEAN";"$COVERAGE_SD";"$OVERLAPPING_READ_PAIRS_PERCENT";"$MEAN_MAPPING_QUALITY";"$GENERAL_ERROR_RATE_PERCENT";"$INSERTIONS_PERCENT";"$DELETIONS_PERCENT";"$HOMOPOLYMER_INDELS_PERCENT";"$READ_ORIGIN_EXONIC_PERCENT";"$READ_ORIGIN_INTRONIC_PERCENT";"$READ_ORIGIN_INTERGENIC_PERCENT";"$READ_ORIGIN_INTRONIC_INTERGENIC_PERCENT";"$COVERAGE_5_BIAS";"$COVERAGE_3_BIAS";"$MEDIAN_INSERT_SIZE";"$MODE_INSERT_SIZE";"$MIN_INSERT_SIZE";"$MAX_INSERT_SIZE";"$MEAN_INSERT_SIZE";"$STANDARD_DEVIATION_INSERT_SIZE";"$PERCENT_ONTARGET_READS"" >> ""$COMPARISON_DIR"/"$RUN"."$MAPPER"."$MAPPINGS"."$BAM"."$GENOME"_comparison.csv.tmp"
+				done
+				wait
+			sort -t ';' ""$COMPARISON_DIR"/"$RUN"."$MAPPER"."$MAPPINGS"."$BAM"."$GENOME"_comparison.csv.tmp" > ""$COMPARISON_DIR"/"$RUN"."$MAPPER"."$MAPPINGS"."$BAM"."$GENOME"_comparison.csv"
+			rm -rf ""$COMPARISON_DIR"/"$RUN"."$MAPPER"."$MAPPINGS"."$BAM"."$GENOME"_comparison.csv.tmp"
+#			awk '{for (i=1;i<=NF;i++){a[i]+=$i}} END {for (i=1;i<=NF;i++){printf "%.2f", a[i]/NR; printf ";"}printf "\n"}' FS=";" ""$COMPARISON_DIR"/"$RUN"."$MAPPER"."$MAPPINGS"."$BAM"."$GENOME"_comparison.csv" | awk '{$1="Mean"; print$0}' FS=";" OFS=";" | sed 's/;$//' >> ""$COMPARISON_DIR"/"$RUN"."$MAPPER"."$MAPPINGS"."$BAM"."$GENOME"_comparison.csv" &&
+			mv ""$COMPARISON_DIR"/"$RUN"."$MAPPER"."$MAPPINGS"."$BAM"."$GENOME"_comparison.csv" ""$COMPARISON_DIR"/"$RUN"."$MAPPER"."$MAPPINGS"."$BAM"."$GENOME"_comparison.csv.tmp"
+				sed '1i\Sample;All_mates;All_mapped_mates;Percent_mapped_mates;Unmapped_mates;Single_hit_mates;Percent_single_hit_mates;Zero_edit_mates;Percent_zero_edit_mates;Non_0_edit_mates;Mates_mapped_discordantly;Split_reads_mates;Percent_split_reads_mates;Junctions;Mates_supporting_junctions;Percent_mates_supporting_junctions;Percent_duplicates;Median_coverage_depth_without_zeros;Mean_coverage_depth_without_zeros;SD_coverage_depth_without_zeros;Median_coverage_depth_on_target;Mean_coverage_depth_on_target;SD_coverage_depth_on_target;Coverage_mean;Coverage_SD;Overlapping_read_pairs_percent;Mean_mapping_quality;General_error_rate_percent;Mapped_reads_with_at_least_one_insertion_percent;Mapped_reads_with_at_least_one_deletion_percent;Homopolymer_indels_percent;Read_origin_exonic_percent;Read_origin_intronic_percent;Read_origin_intergenic_percent;Read_origin.intronic_intergenic_overlapping_exon_percent;Coverage_5_bias;Coverage_3_bias;Median_insert_size;Mode_insert_size;Min_insert_size;Max_insert_size;Mean_insert_size;Standard_deviation_mean_insert_size;On_target_percent\' ""$COMPARISON_DIR"/"$RUN"."$MAPPER"."$MAPPINGS"."$BAM"."$GENOME"_comparison.csv.tmp" > ""$COMPARISON_DIR"/"$RUN"."$MAPPER"."$MAPPINGS"."$BAM"."$GENOME"_comparison.csv"
+			rm -rf ""$COMPARISON_DIR"/"$RUN"."$MAPPER"."$MAPPINGS"."$BAM"."$GENOME"_comparison.csv.tmp"
+			tabstats.r ""$COMPARISON_DIR"/"$RUN"."$MAPPER"."$MAPPINGS"."$BAM"."$GENOME"_comparison.csv" 2>>$WORK_DIR/ERRORS.log
+			if [[ -n $BED ]]; then BASE_BED=$(basename "$BED"); else BASE_BED="NA"; fi
+			mv ""$COMPARISON_DIR"/"$RUN"."$MAPPER"."$MAPPINGS"."$BAM"."$GENOME"_comparison.csv" ""$COMPARISON_DIR"/"$RUN"."$MAPPER"."$MAPPINGS"."$BAM"."$GENOME".BED:"$BASE_BED"_comparison.csv"
+
+if [[ -f "$BED" ]]; then
+	dialog --colors --infobox "Testing the sequencing read coverage depth with the (\Zb\Z4SeqDepth_checker.py\Zn) app is being performed...\nBED file:\n\Zb\Z2'$(echo ${aBEDFILES[@]} | tr " " "\n")'\Zn\nRun ID: \Zb\Z4"$RUN"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nBAM file type: \Zb\Z4"$SELECTED_BAM"\Zn\nThreshold: \Zb\Z4"$THRESHOLD"\Zn\nSD_times: \Zb\Z4"$SDTIMES"\Zn\n" 0 0 2>&1 >/dev/tty
+	SeqDepth_checker.py -b "$BED" -d "$MAPPING_DIR" -o "$COMPARISON_DIR" -t "$CPUS" -s "_"$BAM"" -S "$SDTIMES" -T "$THRESHOLD" 1>"$COMPARISON_DIR"/SeqDepth_checker.log 2>>$WORK_DIR/ERRORS.log
+fi
+
+if [[ $SUBSET == "yes" ]]; then
+	SUBSET_DIR=$(echo "${aBEDFILES[@]}" | xargs printf '%s\n' | awk -F '/' '{print $NF}' | xargs | sed 's/ /_and_/g ; s/$/\.subset/')
+	mkdir -p ""$TMPDIR"/"$SUBSET_DIR""
+	mkdir -p ""$WORK_DIR"/RUNS/"$RUN"/"$MAPPINGS"/"$GENOME"/"$MAPPER"/"$SUBSET_DIR""
+	COUNTER=0
+	f_threads "$SAMPLESN"
+	for i in ${aSAMPLES[@]}
+	do
+		set +e
+		let COUNTER++
+		eval ${SETMODE}
+		(
+		echo "$(echo "print(int(round("$COUNTER"./"$SAMPLESN"*100,0)))" | python)" | dialog --colors --gauge "Subsetting of DNA/RNA mapping results (\Zb\Z4"$MAPPER"\Zn) is being performed...\nBED file(s):\n\Zb\Z2'$(echo ${aBEDFILES[@]} | tr " " "\n")'\Zn\nRun ID: \Zb\Z4"$RUN"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nBAM file type: \Zb\Z4"$SELECTED_BAM"\Zn\nSample: \Zb\Z2"$i"\Zn (\Zb\Z4"$COUNTER"\Zn of \Zb\Z4"$SAMPLESN"\Zn)." 0 0 0 2>&1 >/dev/tty
+
+		cp -a ""$MAPPING_DIR"/"$i"_"$BAM".bam" ""$TMPDIR"/"$SUBSET_DIR"/"$i"_"$BAM".bam"
+		
+		for BEDFILE in ${aBEDFILES[@]}
+			do
+			samtools view -bh -@ "$THREADS" ""$TMPDIR"/"$SUBSET_DIR"/"$i"_"$BAM".bam" -L "$BEDFILE" > ""$TMPDIR"/"$SUBSET_DIR"/"$i"_"$BAM".bam.tmp" 2>>$WORK_DIR/ERRORS.log &&
+			mv ""$TMPDIR"/"$SUBSET_DIR"/"$i"_"$BAM".bam.tmp" ""$TMPDIR"/"$SUBSET_DIR"/"$i"_"$BAM".bam" 2>>$WORK_DIR/ERRORS.log
+			done
+			wait
+			mv ""$TMPDIR"/"$SUBSET_DIR"/"$i"_"$BAM".bam" ""$WORK_DIR"/RUNS/"$RUN"/"$MAPPINGS"/"$GENOME"/"$MAPPER"/"$SUBSET_DIR"/"$i"_"$BAM".bam" &&
+			samtools index -@ "$THREADS" ""$WORK_DIR"/RUNS/"$RUN"/"$MAPPINGS"/"$GENOME"/"$MAPPER"/"$SUBSET_DIR"/"$i"_"$BAM".bam" 2>>$WORK_DIR/ERRORS.log
+		) &
+		f_parallel
+	done
+	wait
+rmdir ""$TMPDIR"/"$SUBSET_DIR""
+fi
+}
+
+function f_Display_mapping_comparison() {
+unset RUN
+f_selection_single "[A-Z0-9]+" ""$WORK_DIR"/RUNS/"
+if [[ -z "$CHOICE" ]]; then
+dialog --colors --msgbox "There is nothing to do." 0 0 2>&1 >/dev/tty
+else
+RUN="$CHOICE"
+aCSVS=($(find ""$WORK_DIR"/RUNS/"$RUN"" -regex ".*COMPARISON.*\_comparison.csv$" | awk -F "/" '{print $NF,"on"}'))
+	if [[ -z $(echo "${aCSVS[@]}") ]]; then
+	dialog --colors --msgbox "There is nothing to do." 0 0 2>&1 >/dev/tty
+	else
+	set +e
+	aSELECTED_CSVS=($(dialog --no-items --colors --checklist "Please, select the \Zb\Z4DNA/RNA mapping comparison results, CSV files,\Zn you want to display:\Zn\nRun ID: \Zb\Z4"$RUN"\Zn" 0 0 0 "${aCSVS[@]}" 2>&1 >/dev/tty))
+	eval ${SETMODE}
+rm -rf ".RData"
+for CSV in "${aSELECTED_CSVS[@]}"
+do
+CSV_FULL=$(find ""$WORK_DIR"/RUNS/"$RUN"" -name "$CSV") 
+echo "'"$CSV"' <- read.csv(file='"$CSV_FULL"', header=TRUE, sep=';')" | R --save --silent >> ""$WORK_DIR"/"$APPNAME".log" 2>>$WORK_DIR/ERRORS.log
+done
+wait
+rstudio & >> ""$WORK_DIR"/"$APPNAME".log" 2>>$WORK_DIR/ERRORS.log
+	fi
+
+aXLSX=($(find ""$WORK_DIR"/RUNS/"$RUN"" -regex ".*Seq_depths_.*\.xlsx$" | awk -F "/" '{print $NF,"on"}'))
+	if [[ -z $(echo "${aXLSX[@]}") ]]; then
+	dialog --colors --msgbox "There is nothing to do." 0 0 2>&1 >/dev/tty
+	else
+	set +e
+	aSELECTED_XLSX=($(dialog --no-items --colors --checklist "Please, select the \Zb\Z4sequencing depth analysis results\Zn you want to display:\Zn\nRun ID: \Zb\Z4"$RUN"\Zn" 0 0 0 "${aXLSX[@]}" 2>&1 >/dev/tty))
+	eval ${SETMODE}
+
+for XLSX in "${aSELECTED_XLSX[@]}"
+do
+XLSX_FULL=$(find ""$WORK_DIR"/RUNS/"$RUN"" -name "$XLSX")
+flatpak run org.libreoffice.LibreOffice "$XLSX_FULL" & 1>> ""$WORK_DIR"/"$APPNAME".log" 2>>$WORK_DIR/ERRORS.log
+done
+	fi
+fi
+}
+f_gene_expression() {
+#aSAMPLES=($(ls -A ""$WORK_DIR"/RUNS/"$RUN"/FASTQ" | egrep ".*\.fastq\.gz$" | awk 'NF{NF-=3}1' FS='_' OFS='_' | sort | uniq))
+#SAMPLESN=$(printf '%s\n' "${aSAMPLES[@]}" | wc -l)
+#f_threads "$SAMPLESN"
+if [[ -d ""$WORK_DIR"/RUNS/"$RUN"/FASTQ_TRIMMED/" ]]; then
+	aSELECTED_FASTQS=(
+	"Original_FASTQ_files"
+	"TRIMMOMATIC-trimmed_FASTQ_files"
+	)
+else
+	aSELECTED_FASTQS="Original_FASTQ_files"
+fi
+
+for FASTQ_TYPE in "${aSELECTED_FASTQS[@]}"
+do
+	if [[ "$FASTQ_TYPE" == "Original_FASTQ_files"  ]]; then
+		MAPPINGS=MAPPINGS
+	elif [[ "$FASTQ_TYPE" == "TRIMMOMATIC-trimmed_FASTQ_files"  ]]; then
+		MAPPINGS=MAPPINGS_TRIMMED
+	fi
+	touch ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE""
+	GENOME="$(awk -F ":" '/GENOME:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE"")"
+	GTF="$(awk -F ":" '/GTF:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE"")"
+	aSELECTED_MAPPERS=($(awk -F ":" '/MAPPERS:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE""))
+	aSELECTED_EXP=($(awk -F ":" '/EXP_TYPE:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE""))
+	SELECTED_CSVFILE="$(awk -F ":" '/CSVFILE:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE"")"
+	SAMPLE_COLUMN="$(awk -F ":" '/SAMPLE_COLUMN:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE"")"
+	aGROUPING_VARS=($(awk -F ":" '/GROUPING_COLUMN:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE""))
+	aFACTOR_COLUMNS=($(for i in $(cat ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE"" | egrep "^FACTOR_COLUMNS:.*" | sed 's/ /+/g'); do echo "$i" | awk -F ":" '{print $2}'; done))
+	STRANDSPEC="$(awk -F ":" '/STRANDSPEC:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE"")"
+	ALPHA="$(awk -F ":" '/ALPHA:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE"")"
+	FC="$(awk -F ":" '/FC:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE"")"
+	FILTERFUN="$(awk -F ":" '/FILTERFUN:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE"")"
+	TXTFILE="$(awk -F ":" '/TXTFILE:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE"")"
+	EXPFULL="$(awk -F ":" '/EXPFULL:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE"")"
+	BAM_SUBSETS=($(awk -F ":" '/BAM_SUBSETS:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE""))
+	COMPARISONS=$(grep "COMPARISONS:" ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE"" | cut -d ":" -f2-)
+	PAIRED_SAMPLES="$(awk -F ":" '/PAIRED_SAMPLES:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE"")"
+	PAIRS_COLUMN="$(awk -F ":" '/PAIRS_COLUMN:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE"")"
+	FDR="$(awk -F ":" '/FDR:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE"")"
+
+	function f_expression_exec {
+						BAM_SUBSETS_MAPPER=($(grep "$MAPPER" <(echo "${BAM_SUBSETS[@]}" | tr " " "\n")))
+					if [[ $EXPFULL != "no" ]]; then
+						if [[ "${#BAM_SUBSETS_MAPPER[@]}" -eq 0 ]]; then
+							MAPPING_DIRS=""$WORK_DIR"/RUNS/"$RUN"/"$MAPPINGS"/"$GENOME"/"$MAPPER""
+						else
+
+							BAM_SUBSETS_MAPPER=($(echo "${BAM_SUBSETS_MAPPER[@]}" | xargs printf '%s\n' | sed "s%^%$WORK_DIR/RUNS/$RUN/$MAPPINGS/$GENOME/%"))
+							MAPPING_DIRS=($(echo ""$WORK_DIR"/RUNS/"$RUN"/"$MAPPINGS"/"$GENOME"/"$MAPPER" ${BAM_SUBSETS_MAPPER[@]}"))
+						fi
+					else
+						if [[ "${#BAM_SUBSETS_MAPPER[@]}" -gt 0 ]]; then	
+							MAPPING_DIRS=($(echo "${BAM_SUBSETS_MAPPER[@]}" | xargs printf '%s\n' | sed "s%^%$WORK_DIR/RUNS/$RUN/$MAPPINGS/$GENOME/%"))
+						else
+							unset MAPPING_DIRS
+						fi
+					fi
+
+					for MAPPING_DIR in "${MAPPING_DIRS[@]}"
+						do
+						if  [[ "$EXP_TYPE" == "DESEQ2" ]]; then
+							EXPRESSION_DIR=""$MAPPING_DIR"/EXPRESSION/"$EXP_TYPE"/CSV_FILE:$(basename "$SELECTED_CSVFILE")/PAIRED_SAMPLES:"$PAIRED_SAMPLES";PAIRS_COLUMN:"$PAIRS_COLUMN"/GROUPING_VARS:"$GROUPING_VAR"/INDEPENDENT_FACTORS:"$FACTORS"/FILTERS:"${FILTERFUN}"/"
+						elif [[ "$EXP_TYPE" == "EDGER" ]] && [[ "${FILTERFUN}" == "UNFILTERED" ]]; then
+							EXPRESSION_DIR=""$MAPPING_DIR"/EXPRESSION/"$EXP_TYPE"/CSV_FILE:$(basename "$SELECTED_CSVFILE")/PAIRED_SAMPLES:"$PAIRED_SAMPLES";PAIRS_COLUMN:"$PAIRS_COLUMN"/GROUPING_VARS:"$GROUPING_VAR"/INDEPENDENT_FACTORS:"$FACTORS"/UNFILTERED"
+						elif [[ "$EXP_TYPE" == "EDGER" ]] && [[ "${FILTERFUN}" != "UNFILTERED" ]]; then
+							EXPRESSION_DIR=""$MAPPING_DIR"/EXPRESSION/"$EXP_TYPE"/CSV_FILE:$(basename "$SELECTED_CSVFILE")/PAIRED_SAMPLES:"$PAIRED_SAMPLES";PAIRS_COLUMN:"$PAIRS_COLUMN"/GROUPING_VARS:"$GROUPING_VAR"/INDEPENDENT_FACTORS:"$FACTORS"/FILTERED"
+						fi 
+						mkdir -p "$EXPRESSION_DIR"
+
+						local COMPARISONS=$(echo "$COMPARISONS" | sed 's/;/\n/g' | egrep -f <(echo "${FACTORS[@]}" | sed 's/+/\n/g; s/^/\^/') |  tr "\n" ";" | sed 's/;$//g')
+
+						dialog --colors --infobox "Gene expression analysis with \Zb\Z4"$EXP_TYPE" app\Zn is being performed...\n\ZnRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nMAPPER: \Zb\Z4"$MAPPER"\Zn\nMapping dir: \Zb\Z4"$MAPPING_DIR"\Zn\nExpression analysis app: \Zb\Z4"$EXP_TYPE"\Zn\nBAM file type: \Zb\Z4"$BAM"\Zn\nCSV file: \Zb\Z4"$SELECTED_CSVFILE"\Zn\nGrouping variable(s): \Zb\Z4"$GROUPING_VAR"\Zn\nGroup(s): \Zb\Z4"$GROUP"\Zn\nIndependent factor(s): \Zb\Z4"$FACTORS"\Zn\nComparison(s): \Zb\Z4"$COMPARISONS"\Zn\nPaired samples: \Zb\Z4$PAIRED_SAMPLES\Zn\nColumn with pair identifiers: \Zb\Z4"$PAIRS_COLUMN"\Zn\nFiltering function(s): \Zb\Z4"${FILTERFUN}"\Zn\nGene signature file: \Zb\Z4"$TXTFILE"\Zn\nFDR correction: \Zb\Z4"$FDR"\Zn\n" 0 0 2>&1 >/dev/tty
+						gene_expression.r "$EXPRESSION_DIR" ""$RUN"."$MAPPINGS"."$GENOME"."$MAPPER"."$EXP_TYPE"."$BAM"."$GROUP"" "$MAPPING_DIR" "$WORK_DIR"/REFSEQS/"$GTF" "$STRANDSPEC" "$ALPHA" "$FC" "${FILTERFUN}" "$CPUS" "$SELECTED_CSVFILE" "$SAMPLE_COLUMN" "$GROUPING_VAR" "$GROUP" "$TXTFILE" "$COMPARISONS" "$PAIRED_SAMPLES" "$PAIRS_COLUMN" "$FDR" $(echo "${FACTORS[@]}" | sed 's/+/ /g') >> "$EXPRESSION_DIR"/"$RUN"."$MAPPINGS"."$GENOME"."$MAPPER"."$EXP_TYPE"."$BAM"."$GROUP"."$FACTORS".logs 2>&1
+						if [[ "$?" != 0  ]]; then
+							dialog --colors --infobox "\Zb\Z1Gene expression analysis with \Zb\Z4"$EXP_TYPE" app\Z1 is not complete because of an error.\nThe last 10 lines of the log file:\Zn\Z2\n""$EXPRESSION_DIR"/"$RUN"."$MAPPINGS"."$GENOME"."$MAPPER"."$EXP_TYPE"."$BAM"."$GROUP"."$FACTORS".logs"\Zn read:\n\Zb\Z4'$(tail -n 10 ""$EXPRESSION_DIR"/"$RUN"."$MAPPINGS"."$GENOME"."$MAPPER"."$EXP_TYPE"."$BAM"."$GROUP"."$FACTORS".logs" | sed 's/$/\\n/g')'\n\ZnRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nMAPPER: \Zb\Z4"$MAPPER"\Zn\nMapping dir: \Zb\Z4"$MAPPING_DIR"\Zn\nExpression analysis app: \Zb\Z4"$EXP_TYPE"\Zn\nBAM file type: \Zb\Z4"$BAM"\Zn\nCSV file: \Zb\Z4"$SELECTED_CSVFILE"\Zn\nGrouping variable(s): \Zb\Z4"$GROUPING_VAR"\Zn\nGroup(s): \Zb\Z4"$GROUP"\Zn\nIndependent factor(s): \Zb\Z4"$FACTORS"\Zn\nComparison(s): \Zb\Z4"$COMPARISONS"\Zn\nPaired samples: \Zb\Z4$PAIRED_SAMPLES\Zn\nColumn with pair identifiers: \Zb\Z4"$PAIRS_COLUMN"\Zn\nFiltering function(s): \Zb\Z4"${FILTERFUN}"\Zn\nGene signature file: \Zb\Z4"$TXTFILE"\Zn\nFDR correction: \Zb\Z4"$FDR"\Zn\n" 0 0 2>&1 >/dev/tty
+							sleep 3
+							touch ""$TMPDIR"/job_error."$RUN""
+							continue
+						fi
+						done
+						wait
+	}
+
+	for MAPPER in "${aSELECTED_MAPPERS[@]}"
+	do	
+		for EXP_TYPE in "${aSELECTED_EXP[@]}"
+		do
+		aSELECTED_BAMS=($(awk -F ":" '/BAMS:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE""))
+			for BAM in "${aSELECTED_BAMS[@]}"
+			do
+				for GROUPING_VAR in "${aGROUPING_VARS[@]}"
+				do
+				if [[ "$GROUPING_VAR" == "ALL_SAMPLES" ]]; then
+				GROUP="ALL_SAMPLES"
+					for FACTORS in "${aFACTOR_COLUMNS[@]}"
+					do
+						f_expression_exec
+					done
+					wait
+				else
+				aVARS=($(csvcut -d ";" -c "$GROUPING_VAR" "$SELECTED_CSVFILE" | sed -ne '1p' | sed 's/,/ /'))
+				for i in ${aVARS[@]}; do VAR=$(csvcut -d ";" -c ${i} "$SELECTED_CSVFILE" | sed "1d; /\"\"/d; s/^/${i}:/"); echo "$VAR" > "$TMPDIR"/"$i".varlist.tmp ; done
+				aGROUPS=($(paste -d "," $(find "$TMPDIR" -name "*.varlist.tmp") | sort -u | sed '/:NA/d'))
+				rm -rf *.varlist.tmp
+				
+				for GROUP in "${aGROUPS[@]}"
+				do
+					for FACTORS in "${aFACTOR_COLUMNS[@]}"
+					do
+						f_expression_exec
+					done
+					wait
+				done
+				wait
+				fi
+			done
+			wait
+		done
+		wait 
+		done
+		wait
+	done
+	wait
+done
+wait
+}
+
+function f_gene_expression_comparison() {
+
+aSELECTED_FASTQS=($(cat ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"* | sort -u | awk -F ":" '/FASTQS:/ {print $2}'))
+for FASTQ_TYPE in "${aSELECTED_FASTQS[@]}"
+do
+touch ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE""
+GENOME="$(awk -F ":" '/GENOME:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE"")"
+CSVNOS="$(awk -F "_" '/CSVNOS_/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE"")"
+	if [[ "$FASTQ_TYPE" == "Original_FASTQ_files"  ]]; then
+		MAPPINGS=MAPPINGS
+	elif [[ "$FASTQ_TYPE" == "TRIMMOMATIC-trimmed_FASTQ_files"  ]]; then
+		MAPPINGS=MAPPINGS_TRIMMED
+	fi
+	EXP_COMPARISON_DIR=""$WORK_DIR"/RUNS/"$RUN"/"$MAPPINGS"/"$GENOME"/COMPARISON/EXPRESSION"
+	mkdir -p "$EXP_COMPARISON_DIR"
+	cd "$EXP_COMPARISON_DIR"
+	rm -rf .RData 
+	if [[ -z "$CSVNOS" ]]; then 
+		dialog --colors --infobox "\Zb\Z4Gene expression comparison is being performed...\n\ZnRun ID: \Z2"$RUN"\Zn\nFASTQ file type: \Z2"$FASTQ_TYPE"\Zn\nGenome: \Z2"$GENOME"\Zn\nDestination directory: \Z2"$EXP_COMPARISON_DIR"" 0 0 2>&1 >/dev/tty 
+		find "../../" -regex ".*\(HISAT2\|STAR\)\/EXPRESSION\/\(DESEQ2\|EDGER\)\/.*\/\(edgeR\|DESeq2\)_analysis_results\..*\.csv$" | exp.comparison.r > ""$EXP_COMPARISON_DIR"/exp.comparison.logs"
+	else 
+		aSELCSVS=($(find "../../" -regex ".*\(HISAT2\|STAR\)\/EXPRESSION\/\(DESEQ2\|EDGER\)\/.*\/\(edgeR\|DESeq2\)_analysis_results\..*\.csv$" | egrep -n "*" | grep "$CSVNOS" | sed 's/^[0-9]\+://'))
+		if [[ -z $(echo "${aSELCSVS[@]}") ]];then
+			dialog --colors --sleep 3 --infobox "\Zb\Z1No CSV tables have been selected. The comparison is not possible.\n\ZnRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn" 0 0 2>&1 >/dev/tty 
+			touch ""$TMPDIR"/job_error."$RUN""
+                        continue 
+		else 
+			dialog --colors --infobox "\Zb\Z4Gene expression comparison is being performed...\n\ZnRun ID: \Z2"$RUN"\Zn\nFASTQ file type: \Z2"$FASTQ_TYPE"\Zn\nGenome: \Z2"$GENOME"\Zn\nDestination directory: \Z2"$EXP_COMPARISON_DIR"" 0 0 2>&1 >/dev/tty 
+			find "../../" -regex ".*\(HISAT2\|STAR\)\/EXPRESSION\/\(DESEQ2\|EDGER\)\/.*\/\(edgeR\|DESeq2\)_analysis_results\..*\.csv$" | egrep -n "*" | grep "$CSVNOS" | sed 's/^[0-9]\+://' | exp.comparison.r > ""$EXP_COMPARISON_DIR"/exp.comparison.logs"
+		fi
+	fi 	
+	if [[ "$?" != 0  ]]; then
+		dialog --colors --sleep 3 --infobox "\Zb\Z1Gene expression comparison is not complete because of an error.\nThe last 10 lines of the log file read:\n\Zb\Z4'$(tail -n 10 "exp.comparison.logs" | sed 's/$/\\n/g')'\n\ZnRun ID: \Z2"$RUN"\Zn\nFASTQ file type: \Z2"$FASTQ_TYPE"\Zn\nGenome: \Z2"$GENOME"\Zn\nDestination directory: \Z2"$EXP_COMPARISON_DIR"" 0 0 2>&1 >/dev/tty 
+		touch ""$TMPDIR"/job_error."$RUN""
+		continue
+	fi  
+	cd "$TMPDIR"
+done
+wait 
+}
+
+function f_VEP() {
+function f_VEP_analysis {
+
+	if [[ -n $(find "$MAPPING_DIR" -maxdepth 1 -name "*_"$BAM".bam" -type f) ]]; then
+			rm -rf "$VEP_DIR"
+			mkdir -p "$SNP_VEP_DIR"
+			mkdir -p "$NON_SNP_VEP_DIR"
+
+			COUNTER=0
+			for i in "${aSAMPLES[@]}"
+			do
+			set +e
+			let COUNTER++
+			eval ${SETMODE}
+			( 
+			echo "$(echo "print(int(round("$COUNTER"./"$SAMPLESN"*100,0)))" | python)" | dialog --colors --gauge "Variant effect prediction with \Zb\Z4VEP app\Zn is being performed...\n\ZnRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nMAPPER: \Zb\Z4"$MAPPER"\Zn\nMapping dir: \Zb\Z4"$MAPPING_DIR"\Zn\nBAM file type: \Zb\Z4"$BAM"\Zn\nSample: \Zb\Z2"$i"\Zn (\Zb\Z4"$COUNTER"\Zn of \Zb\Z4"$SAMPLESN"\Zn)" 0 0 2>&1 >/dev/tty
+
+		if [[ -n "$(samtools view ""$MAPPING_DIR"/"$i"_"$BAM".bam" | head)" ]]; then
+source "/programs/miniconda3/etc/profile.d/conda.sh"
+conda activate bcftools
+
+			bcftools mpileup --threads "$THREADS" -Ou -f ""$WORK_DIR"/REFSEQS/"$GENOME".fa" ""$MAPPING_DIR"/"$i"_"$BAM".bam" --annotate FORMAT/AD 2>/dev/null | bcftools call --threads "$THREADS" -mv -Ov -o ""$VEP_DIR"/"$i"_"$BAM"_BCFTOOLS.vcf" >/dev/null 2>&1 &&
+			VAF.checker.py -p ""$VEP_DIR"/"$i"_"$BAM"_BCFTOOLS.vcf" -f $VAF > ""$VEP_DIR"/"$i"_"$BAM"_BCFTOOLS.ad.vcf" 2>>$WORK_DIR/ERRORS.log &&
+			bcftools +fill-tags ""$VEP_DIR"/"$i"_"$BAM"_BCFTOOLS.ad.vcf" -Ov -o ""$VEP_DIR"/"$i"_"$BAM"_BCFTOOLS.ad.fill_tags.vcf" -- -t all 2>>$WORK_DIR/ERRORS.log &&
+			vcf-annotate -f "${FILTERFUN}" ""$VEP_DIR"/"$i"_"$BAM"_BCFTOOLS.ad.fill_tags.vcf" 2>>$WORK_DIR/ERRORS.log | awk '{if($1 ~ /^#.*/) {print $0} else if($7 == "PASS") {print $0}}' > ""$VEP_DIR"/"$i"_"$BAM"_BCFTOOLS.ad.fill_tags.filtered.vcf" &&
+			bcftools view --types snps ""$VEP_DIR"/"$i"_"$BAM"_BCFTOOLS.ad.fill_tags.filtered.vcf" > ""$SNP_VEP_DIR"/"$i"_"$BAM"_BCFTOOLS.ad.fill_tags.filtered.snp.vcf" 2>>$WORK_DIR/ERRORS.log &&
+			bcftools view --types indels,mnps,bnd,other ""$VEP_DIR"/"$i"_"$BAM"_BCFTOOLS.ad.fill_tags.filtered.vcf" > ""$NON_SNP_VEP_DIR"/"$i"_"$BAM"_BCFTOOLS.ad.fill_tags.filtered.non_snp.vcf" 2>>$WORK_DIR/ERRORS.log &&
+
+conda deactivate
+
+			vep --fork "$THREADS" -i ""$SNP_VEP_DIR"/"$i"_"$BAM"_BCFTOOLS.ad.fill_tags.filtered.snp.vcf" --format vcf --force_overwrite --offline --merged --species "homo_sapiens" --hgvs --hgvsg --everything --individual all --tab -o /dev/stdout --stats_file ""$SNP_VEP_DIR"/"$i"_"$BAM"_VEP.SNP.html" | sed '/^##.*$/d; s/^#Uploaded_variation/Uploaded_variation/' > ""$SNP_VEP_DIR"/"$i"_"$BAM"_VEP.SNP.csv" 2>>$WORK_DIR/ERRORS.log &&
+
+			vep --fork "$THREADS" -i ""$NON_SNP_VEP_DIR"/"$i"_"$BAM"_BCFTOOLS.ad.fill_tags.filtered.non_snp.vcf" --format vcf --force_overwrite --offline --merged --species "homo_sapiens" --hgvs --hgvsg --everything --individual all --tab -o /dev/stdout --stats_file ""$NON_SNP_VEP_DIR"/"$i"_"$BAM"_VEP.NON_SNP.html" | sed '/^##.*$/d; s/^#Uploaded_variation/Uploaded_variation/' > ""$NON_SNP_VEP_DIR"/"$i"_"$BAM"_VEP.NON_SNP.csv" 2>>$WORK_DIR/ERRORS.log &&
+
+			rm -rf ""$VEP_DIR"/"$i"_"$BAM"_BCFTOOLS.vcf" ""$VEP_DIR"/"$i"_"$BAM"_BCFTOOLS.ad.vcf" ""$VEP_DIR"/"$i"_"$BAM"_BCFTOOLS.ad.fill_tags.vcf" ""$VEP_DIR"/"$i"_"$BAM"_BCFTOOLS.ad.fill_tags.filtered.vcf"
+
+			wait
+		else
+			echo "The corresponding BAM file: ""$MAPPING_DIR"/"$i"_"$BAM".bam" has no reads." > ""$VEP_DIR"/"$i"_"$BAM".empty.log"
+		fi
+			) &
+			f_parallel
+			done
+			wait
+	else
+			dialog --colors --msgbox "\Zb\Z1Variant effect prediction with \Zb\Z4VEP app\Z1 cannot be performed because the corresponding bam files are missing...\n\ZnRun ID: \Zb\Z4"$RUN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nMAPPER: \Zb\Z4"$MAPPER"\Zn\nMapping dir: \Zb\Z4"$MAPPING_DIR"\Zn\nBAM file type: \Zb\Z4"$BAM"\Zn" 0 0 2>&1 >/dev/tty
+			touch ""$TMPDIR"/job_error"
+			exit 1
+	fi
+}
+
+aSAMPLES=($(ls -A ""$WORK_DIR"/RUNS/"$RUN"/FASTQ" | egrep ".*\.fastq\.gz$" | awk 'NF{NF-=3}1' FS='_' OFS='_' | sort | uniq))
+SAMPLESN=$(printf '%s\n' "${aSAMPLES[@]}" | wc -l)
+f_threads "$SAMPLESN"
+if [[ -d ""$WORK_DIR"/RUNS/"$RUN"/FASTQ_TRIMMED/" ]]; then
+	aSELECTED_FASTQS=(
+	"Original_FASTQ_files"
+	"TRIMMOMATIC-trimmed_FASTQ_files"
+	)
+else
+	aSELECTED_FASTQS="Original_FASTQ_files"
+fi
+
+for FASTQ_TYPE in "${aSELECTED_FASTQS[@]}"
+do
+	if [[ "$FASTQ_TYPE" == "Original_FASTQ_files"  ]]; then
+		MAPPINGS=MAPPINGS
+	elif [[ "$FASTQ_TYPE" == "TRIMMOMATIC-trimmed_FASTQ_files"  ]]; then
+		MAPPINGS=MAPPINGS_TRIMMED
+	fi
+	touch ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE""
+	PAIRED_SAMPLES="$(awk -F ":" '/PAIRED_SAMPLES:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE"")"
+	PAIRS_COLUMN="$(awk -F ":" '/PAIRS_COLUMN:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE"")"
+	GENOME="$(awk -F ":" '/GENOME:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE"")"
+	aSELECTED_MAPPERS=($(awk -F ":" '/MAPPERS:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE""))
+	SELECTED_CSVFILE="$(awk -F ":" '/CSVFILE:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE"")"
+	SAMPLE_COLUMN="$(awk -F ":" '/SAMPLE_COLUMN:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE"")"
+	GROUPING_VARS=($(awk -F ":" '/GROUPING_VARS:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE"" | sort -u))
+	INDFACTORS=($(awk -F ":" '/FACTOR_VAR:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE"" | sort -u))
+	VAF=$(awk -F ":" '/VAF:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE"")
+	FILTERFUN=$(awk -F ":" '/FILTERFUN:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE"")
+	FILTERFUN_DIR=$(echo $FILTERFUN | sed 's%\/%.%g')
+	TXTFILE="$(awk -F ":" '/TXTFILE:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE"")"
+	BAM_SUBSETS=($(awk -F ":" '/BAM_SUBSETS:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE""))
+	VEPFULL="$(awk -F ":" '/VEPFULL:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE"")"
+	VEP_OVERRIDE="$(awk -F ":" '/VEP_OVERRIDE:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE"")"
+	FDR="$(awk -F ":" '/FDR:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE"")"
+
+	if [[ -n $GENOME ]] && [[ -f ""$WORK_DIR"/REFSEQS/"$GENOME".fa.gz"  ]] && [[ ! -f ""$WORK_DIR"/REFSEQS/"$GENOME".fa"  ]]; then
+		dialog --colors --infobox "The \Zb\Z4"$WORK_DIR"/REFSEQS/"$GENOME".fa.gz\Zn file is being decompressed...\nRun ID: \Zb\Z4"$RUN"\Zn" 6 100 2>&1 >/dev/tty
+		gzip -dc ""$WORK_DIR"/REFSEQS/"$GENOME".fa.gz" > ""$WORK_DIR"/REFSEQS/"$GENOME".fa"
+	fi
+
+f_threads "$SAMPLESN"
+export JAVA_OPTS=" -XX:ParallelGCThreads="$THREADS" -Djava.awt.headless=true -Djava.io.tmpdir="$TMPDIR""
+
+for MAPPER in "${aSELECTED_MAPPERS[@]}"
+	do
+BAM_SUBSETS_MAPPER=($(grep "$MAPPER" <(echo "${BAM_SUBSETS[@]}" | tr " " "\n")))
+if [[ $VEPFULL != "no" ]]; then
+	if [[ "${#BAM_SUBSETS_MAPPER[@]}" -eq 0 ]]; then
+		MAPPING_DIRS=""$WORK_DIR"/RUNS/"$RUN"/"$MAPPINGS"/"$GENOME"/"$MAPPER""
+	else
+		BAM_SUBSETS_MAPPER=($(echo "${BAM_SUBSETS_MAPPER[@]}" | xargs printf '%s\n' | sed "s%^%$WORK_DIR/RUNS/$RUN/$MAPPINGS/$GENOME/%"))
+		MAPPING_DIRS=($(echo ""$WORK_DIR"/RUNS/"$RUN"/"$MAPPINGS"/"$GENOME"/"$MAPPER" ${BAM_SUBSETS_MAPPER[@]}"))
+	fi
+else
+	if [[ "${#BAM_SUBSETS_MAPPER[@]}" -gt 0 ]]; then	
+		MAPPING_DIRS=($(echo "${BAM_SUBSETS_MAPPER[@]}" | xargs printf '%s\n' | sed "s%^%$WORK_DIR/RUNS/$RUN/$MAPPINGS/$GENOME/%"))
+	else
+		unset MAPPING_DIRS
+	fi
+fi
+
+	for MAPPING_DIR in "${MAPPING_DIRS[@]}"
+	do
+		aSELECTED_BAMS=($(awk -F ":" '/BAMS:/ {print $2}' ""$TMPDIR"/runjob_"$FUNCNAME"#"$RUN"_"$FASTQ_TYPE""))
+		for SELECTED_BAM in "${aSELECTED_BAMS[@]}"	
+		do
+			VEP_DIR=""$MAPPING_DIR"/VEP/"$SELECTED_BAM"/VAF:${VAF}/"${FILTERFUN_DIR}""
+			SNP_VEP_DIR=""$VEP_DIR"/VEP_results_for_each_sample/SNP"
+			NON_SNP_VEP_DIR=""$VEP_DIR"/VEP_results_for_each_sample/NON_SNP"
+			mkdir -p "$SNP_VEP_DIR"
+			mkdir -p "$NON_SNP_VEP_DIR"
+
+			if [[ "$SELECTED_BAM" == "BAMs_w_dups" ]]; then
+                                BAM="sorted"
+                        elif [[ "$SELECTED_BAM" == "BAMs_wo_dups" ]]; then
+                                BAM="sorted.no_dups"
+                        else
+                        return 1
+                        fi
+
+		if [[ -z $(ls "$SNP_VEP_DIR" | grep -o "_BCFTOOLS.ad.fill_tags.filtered.snp.vcf") ]]; then
+			f_VEP_analysis
+		else 
+			if [[ $VEP_OVERRIDE == "yes" ]]; then
+				f_VEP_analysis
+			fi
+		fi
+
+		for GROUPING_VAR in ${GROUPING_VARS[@]}
+		do
+			for INDFACTOR in ${INDFACTORS[@]}
+			do
+			SNP_VEP_R_DIR=""$VEP_DIR"/Summary/CSV_FILE:$(basename "$SELECTED_CSVFILE")/PAIRED_SAMPLES:"$PAIRED_SAMPLES";PAIRS_COLUMN:"$PAIRS_COLUMN"/Grouping_variables:"$GROUPING_VAR"/Factor:"$INDFACTOR"/SNP"
+			NON_SNP_VEP_R_DIR=""$VEP_DIR"/Summary/CSV_FILE:$(basename "$SELECTED_CSVFILE")/PAIRED_SAMPLES:"$PAIRED_SAMPLES";PAIRS_COLUMN:"$PAIRS_COLUMN"/Grouping_variables:"$GROUPING_VAR"/Factor:"$INDFACTOR"/NON_SNP"
+			VEP_R_DIR=""$VEP_DIR"/Summary/CSV_FILE:$(basename "$SELECTED_CSVFILE")/PAIRED_SAMPLES:"$PAIRED_SAMPLES";PAIRS_COLUMN:"$PAIRS_COLUMN"/Grouping_variables:"$GROUPING_VAR"/Factor:"$INDFACTOR""
+			mkdir -p "$SNP_VEP_R_DIR" "$NON_SNP_VEP_R_DIR" ""$VEP_R_DIR"/COMPARISON"
+
+			dialog --colors --infobox "Variant effect prediction with \Zb\Z2vep.r app\Zn is being performed...\n\ZnRun ID: \Zb\Z4"$RUN"\Zn\nCSV file: \Zb\Z4"$SELECTED_CSVFILE"\Zn\nPaired samples: \Zb\Z4"$PAIRED_SAMPLES"\Zn\nColumn with pair identifiers: \Zb\Z4"$PAIRS_COLUMN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nMAPPER: \Zb\Z4"$MAPPER"\Zn\nMapping dir: \Zb\Z4"$MAPPING_DIR"\Zn\nBAM file type: \Zb\Z4"$BAM"\Zn\nGrouping variable(s): \Zb\Z4"$GROUPING_VAR"\Zn\nIndependent factor: \Zb\Z4"$INDFACTOR"\Zn\nAnalysis type: \Zb\Z4SNP\Zn\nGene signature file: \Zb\Z4"$TXTFILE"\Zn\nFDR correction: \Zb\Z4"$FDR"\Zn\n" 0 0 2>&1 >/dev/tty
+			vep.r "$SNP_VEP_DIR" "$SNP_VEP_R_DIR" "$SELECTED_CSVFILE" "$SAMPLE_COLUMN" "$GROUPING_VAR" "$INDFACTOR" "$TXTFILE" "$CPUS" "$PAIRED_SAMPLES" "$PAIRS_COLUMN" "$FDR" >> ""$SNP_VEP_R_DIR"/vep.r.log" 2>&1
+
+			if [[ "$?" != 0  ]]; then
+				dialog --colors --infobox "\Zb\Z1Variant effect prediction with \Zb\Z2vep.r app\Z1 is not complete because of an error.\nThe last 10 lines of the log file:\Zn\Z2\n""$SNP_VEP_R_DIR"/vep.r.log"\Zn read:\n\Zb\Z4'$(tail -n 10 ""$SNP_VEP_R_DIR"/vep.r.log" | sed 's/$/\\n/g')'\n\ZnRun ID: \Zb\Z4"$RUN"\Zn\nCSV file: \Zb\Z4"$SELECTED_CSVFILE"\Zn\nPaired samples: \Zb\Z4"$PAIRED_SAMPLES"\Zn\nColumn with pair identifiers: \Zb\Z4"$PAIRS_COLUMN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nMAPPER: \Zb\Z4"$MAPPER"\Zn\nMapping dir: \Zb\Z4"$MAPPING_DIR"\Zn\nBAM file type: \Zb\Z4"$BAM"\Zn\nGrouping variable(s): \Zb\Z4"$GROUPING_VAR"\Zn\nIndependent factor: \Zb\Z4"$INDFACTOR"\Zn\nAnalysis type: \Zb\Z4SNP\Zn\nGene signature file: \Zb\Z4"$TXTFILE"\Zn\nFDR correction: \Zb\Z4"$FDR"\Zn\n" 0 0 2>&1 >/dev/tty
+				sleep 3
+				touch ""$TMPDIR"/job_error."$RUN""
+				continue
+			fi
+
+			dialog --colors --infobox "Variant effect prediction with \Zb\Z2vep.r app\Zn is being performed...\n\ZnRun ID: \Zb\Z4"$RUN"\Zn\nCSV file: \Zb\Z4"$SELECTED_CSVFILE"\Zn\nPaired samples: \Zb\Z4"$PAIRED_SAMPLES"\Zn\nColumn with pair identifiers: \Zb\Z4"$PAIRS_COLUMN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nMAPPER: \Zb\Z4"$MAPPER"\Zn\nMapping dir: \Zb\Z4"$MAPPING_DIR"\Zn\nBAM file type: \Zb\Z4"$BAM"\Zn\nGrouping variable(s): \Zb\Z4"$GROUPING_VAR"\Zn\nIndependent factor: \Zb\Z4"$INDFACTOR"\Zn\nAnalysis type: \Zb\Z4NON_SNP\Zn\nGene signature file: \Zb\Z4"$TXTFILE"\Zn\nFDR correction: \Zb\Z4"$FDR"\Zn\n" 0 0 2>&1 >/dev/tty
+			vep.r "$NON_SNP_VEP_DIR" "$NON_SNP_VEP_R_DIR" "$SELECTED_CSVFILE" "$SAMPLE_COLUMN" "$GROUPING_VAR" "$INDFACTOR" "$TXTFILE" "$CPUS" "$PAIRED_SAMPLES" "$PAIRS_COLUMN" "$FDR" >> ""$NON_SNP_VEP_R_DIR"/vep.r.log" 2>&1
+			if [[ "$?" != 0  ]]; then
+				dialog --colors --infobox "\Zb\Z1Variant effect prediction with \Zb\Z2vep.r app\Z1 is not complete because of an error.\nThe last 10 lines of the log file:\Zn\Z2\n""$NON_SNP_VEP_R_DIR"/vep.r.log"\Zn read:\n\Zb\Z4'$(tail -n 10 ""$NON_SNP_VEP_R_DIR"/vep.r.log" | sed 's/$/\\n/g')'\n\ZnRun ID: \Zb\Z4"$RUN"\Zn\nCSV file: \Zb\Z4"$SELECTED_CSVFILE"\Zn\nPaired samples: \Zb\Z4"$PAIRED_SAMPLES"\Zn\nColumn with pair identifiers: \Zb\Z4"$PAIRS_COLUMN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nMAPPER: \Zb\Z4"$MAPPER"\Zn\nMapping dir: \Zb\Z4"$MAPPING_DIR"\Zn\nBAM file type: \Zb\Z4"$BAM"\Zn\nGrouping variable(s): \Zb\Z4"$GROUPING_VAR"\Zn\nIndependent factor: \Zb\Z4"$INDFACTOR"\Zn\nAnalysis type: \Zb\Z4NON_SNP\Zn\nGene signature file: \Zb\Z4"$TXTFILE"\Zn\nFDR correction: \Zb\Z4"$FDR"\Zn\n" 0 0 2>&1 >/dev/tty
+				sleep 3
+				touch ""$TMPDIR"/job_error."$RUN""
+				continue
+			fi
+
+			dialog --colors --infobox "SNP and NON_SNP variant effect predictions comparison with \Zb\Z2vep.comparison.r app\Zn is being performed...\n\ZnRun ID: \Zb\Z4"$RUN"\Zn\nCSV file: \Zb\Z4"$SELECTED_CSVFILE"\Zn\nPaired samples: \Zb\Z4"$PAIRED_SAMPLES"\Zn\nColumn with pair identifiers: \Zb\Z4"$PAIRS_COLUMN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nMAPPER: \Zb\Z4"$MAPPER"\Zn\nMapping dir: \Zb\Z4"$MAPPING_DIR"\Zn\nBAM file type: \Zb\Z4"$BAM"\Zn\nGrouping variable(s): \Zb\Z4"$GROUPING_VAR"\Zn\nIndependent factor: \Zb\Z4"$INDFACTOR"\Zn\nAnalysis type: \Zb\Z4Comparison\Zn\nGene signature file: \Zb\Z4"$TXTFILE"\Zn\nFDR correction: \Zb\Z4"$FDR"\Zn\n" 0 0 2>&1 >/dev/tty
+			vep.comparison.r "$VEP_R_DIR" "$CPUS" "$SELECTED_CSVFILE" "$GROUPING_VAR" "$INDFACTOR" "$PAIRED_SAMPLES" "$PAIRS_COLUMN" "$FDR" >> ""$VEP_R_DIR"/COMPARISON/vep.comparison.r.log" 2>&1
+			if [[ "$?" != 0  ]]; then
+				dialog --colors --infobox "\Zb\Z1SNP and NON_SNP variant effect predictions comparison with \Zb\Z2vep.comparison.r app\Z1 is not complete because of an error.\nThe last 10 lines of the log file:\Zn\Z2\n""$VEP_R_DIR"/COMPARISON/vep.comparison.r.log"\Zn read:\n\Zb\Z4'$(tail -n 10 ""$VEP_R_DIR"/COMPARISON/vep.comparison.r.log" | sed 's/$/\\n/g')'\n\ZnRun ID: \Zb\Z4"$RUN"\Zn\nCSV file: \Zb\Z4"$SELECTED_CSVFILE"\Zn\nPaired samples: \Zb\Z4"$PAIRED_SAMPLES"\Zn\nColumn with pair identifiers: \Zb\Z4"$PAIRS_COLUMN"\Zn\nFASTQ file type: \Zb\Z4"$FASTQ_TYPE"\Zn\nGenome: \Zb\Z4"$GENOME"\Zn\nMAPPER: \Zb\Z4"$MAPPER"\Zn\nMapping dir: \Zb\Z4"$MAPPING_DIR"\Zn\nBAM file type: \Zb\Z4"$BAM"\Zn\nGrouping variable(s): \Zb\Z4"$GROUPING_VAR"\Zn\nIndependent factor: \Zb\Z4"$INDFACTOR"\Zn\nAnalysis type: \Zb\Z4Comparison\Zn\nGene signature file: \Zb\Z4"$TXTFILE"\Zn\nFDR correction: \Zb\Z4"$FDR"\Zn\n" 0 0 2>&1 >/dev/tty
+				sleep 3
+				touch ""$TMPDIR"/job_error."$RUN""
+				continue
+			fi
+			done
+			wait
+		done
+		wait
+		done
+		wait
+	done
+	wait
+	done
+	wait
+done
+wait
+
+}
+
+f_regression() {
+	set +e
+	MAINCSV=$(dialog --no-mouse --title "Please, select the CSV file with the gene expression/mutation/methylation analysis results. Cells with missing data should be empty or filled with 'NA'." --fselect ""$WORK_DIR"/" 10 0 0 2>&1 >/dev/tty)
+	eval ${SETMODE}
+
+        if [[ -z "$MAINCSV" ]]; then
+	        dialog --colors --msgbox "\Zb\Z1A necessary file was not selected.\nThe program is unable to complete the job." 0 0 2>&1 >/dev/tty
+        	return 1
+	elif [[ ! -f "$MAINCSV" ]]; then
+		dialog --colors --msgbox "\Zb\Z1A necessary file does not exist.\nThe program is unable to complete the job." 0 0 2>&1 >/dev/tty
+		return 1
+        fi
+
+	sed -i '1s/^;/Row_names;/' $MAINCSV
+	
+	set +e
+	dialog --colors --yesno "Do these results contain \Zb\Z4continuous variables\Zn (e.g., gene expression data)?\nCSV file:\Zb\Z4$MAINCSV\Zn" 0 0 2>&1 >/dev/tty
+	local EXITCODE="$?"
+        eval ${SETMODE}
+
+	IS_CONTINUOUS="$EXITCODE"
+
+	if [[ "$IS_CONTINUOUS" == 0 ]]; then
+		IS_CONTINUOUS="TRUE"
+	else
+		IS_CONTINUOUS="FALSE"
+	fi
+
+	cat "$MAINCSV" | sed 's/"//g' | sed -n '1p' | sed  's/;/\n/g' |R --slave --no-restore --no-save --file="$(which validate.names.r)" | sed 's/ /;/g; s/$/\n/' | cat - "$MAINCSV" | sed '2d' > "${TMPDIR}/maincsv.tmp" && mv "${TMPDIR}/maincsv.tmp" "$MAINCSV"
+	aMAINCSV_COLUMNS=($(sed -ne '1p' "$MAINCSV" | sed 's/;/\n/g'))
+	set +e
+	MAIN_SAMPLE_COLUMN=$(dialog --no-items --colors --menu "Please, select the column that contains \Zb\Z4unique sample names\Zn.\nCSV file:\Zb\Z4"$MAINCSV"\Zn" 0 0 0 "${aMAINCSV_COLUMNS[@]:0:1000}" 2>&1 >/dev/tty)
+	eval ${SETMODE}
+	csvcut -d ';' -c "$MAIN_SAMPLE_COLUMN" "$MAINCSV" | sed '1d' > ""$TMPDIR"/maincsv_samples"
+	SAMPLENAMESN1=$(cat ""$TMPDIR"/maincsv_samples" | wc -l)
+	USAMPLENAMESN1=$(cat ""$TMPDIR"/maincsv_samples" | sort -u | wc -l)
+	if [[ $SAMPLENAMESN1 != $USAMPLENAMESN1 ]]; then
+		dialog --colors --msgbox "\Zb\Z1The selected variable does not contain unique sample names. Please, correct this error." 0 0 2>&1 >/dev/tty
+		touch ""$TMPDIR"/job_error"
+		return 1
+	fi
+
+	set +e
+	CLINCSV=$(dialog --no-mouse --title "Please, select the CSV file with the clinical data. Cells with missing data should be empty or filled with 'NA'." --fselect ""$WORK_DIR"/"CSV_FILES"/" 10 0 0 2>&1 >/dev/tty)
+	eval ${SETMODE}
+
+        if [[ -z "$CLINCSV" ]]; then
+	        dialog --colors --msgbox "\Zb\Z1A necessary file was not selected.\nThe program is unable to complete the job." 0 0 2>&1 >/dev/tty
+        	return 1
+	elif [[ ! -f "$CLINCSV" ]]; then
+		dialog --colors --msgbox "\Zb\Z1A necessary file does not exist.\nThe program is unable to complete the job." 0 0 2>&1 >/dev/tty
+		return 1
+        fi
+
+
+	sed -i '1s/^;/Row_names;/' $CLINCSV
+	
+	cat "$CLINCSV" | sed 's/"//g' | sed -n '1p' | sed  's/;/\n/g' |R --slave --no-restore --no-save --file="$(which validate.names.r)" | sed 's/ /;/g; s/$/\n/' | cat - "$CLINCSV" | sed '2d' > "${TMPDIR}/clincsv.tmp" && mv "${TMPDIR}/clincsv.tmp" "$CLINCSV"
+	aCLINCSV_COLUMNS=($(sed -ne '1p' "$CLINCSV" | sed 's/;/\n/g'))
+	aCLINCSV_COLUMNSN=($(sed -ne '1p' "$CLINCSV" | sed 's/;/\n/g' | sed 's/$/ off/'))
+	set +e
+	CLIN_SAMPLE_COLUMN=$(dialog --no-items --colors --menu "Please, select the column that contains \Zb\Z4unique sample names\Zn.\nCSV file:\Zb\Z4"$CLINCSV"\Zn" 0 0 0 "${aCLINCSV_COLUMNS[@]}" 2>&1 >/dev/tty)
+	eval ${SETMODE}
+	csvcut -d ';' -c "$CLIN_SAMPLE_COLUMN" "$CLINCSV" | sed '1d' > ""$TMPDIR"/clincsv_samples"
+	SAMPLENAMESN2=$(cat ""$TMPDIR"/clincsv_samples" | wc -l)
+	USAMPLENAMESN2=$(cat ""$TMPDIR"/clincsv_samples" | sort -u | wc -l)
+	if [[ $SAMPLENAMESN2 != $USAMPLENAMESN2 ]]; then
+		dialog --colors --msgbox "\Zb\Z1The selected variable does not contain unique sample names. Please, correct this error." 0 0 2>&1 >/dev/tty
+		touch ""$TMPDIR"/job_error"
+		return 1
+	fi
+
+	MISSING_SAMPLES=($(sets_comparison.py --set2 ""$TMPDIR"/maincsv_samples" --set1 ""$TMPDIR"/clincsv_samples"))
+	if [[ -n ${MISSING_SAMPLES[@]} ]]; then
+        set +e
+	dialog --colors --defaultno --yesno "\Zb\Z1The following samples are missing in your CSV file:\Zn\n$(echo ${MISSING_SAMPLES[@]} | xargs printf '%s\n' | sort -u | sed ':a;N;$!ba;s/\n/, /g').\n\n\Zb\Z4Do you want to proceed with the analysis anyway?\Zn" 0 0 2>&1 >/dev/tty
+	local EXITCODE="$?"
+	eval ${SETMODE}
+
+		if [[ "$EXITCODE" -eq 1 ]]; then
+		touch ""$TMPDIR"/job_error."$RUN""
+		exit 1
+		fi
+	fi
+
+
+
+
+	REGRESSION_TYPES=(
+		"Cox regression model (survival)" on
+		"Logistic regression model (prediction)" on
+			)
+	set +e
+	ANTYPES=$(dialog --no-items --colors --checklist "What type of regression analyses do you want to perform?\nMain CSV file:\n\Zb\Z4"$MAINCSV"\Zn\nClin. CSV file:\n\Zb\Z4"$CLINCSV"\Zn\n" 0 0 0 "${REGRESSION_TYPES[@]}" 2>&1 >/dev/tty | sed 's/Cox regression model \\(survival\\)/coxph/; s/Logistic regression model \\(prediction\\)/lrm/' | sed 's/ /;/g; s/"//g')
+	eval ${SETMODE}
+		if [[ -z "${ANTYPES[@]}" ]]; then
+		dialog --colors --msgbox "\Zb\Z1No regression tests have been selected. The program will exit now." 0 0 2>&1 >/dev/tty
+		touch ""$TMPDIR"/job_error"
+		return 1
+		fi
+	rm -rf ""$TMPDIR"/dep_vars"
+	for ANTYPE in $(echo $ANTYPES | sed 's/;/ /g')
+	do
+		unset SELDEPVAR
+		ANTYPEFULL=$(echo "$ANTYPE" | sed 's/coxph/Cox regression model (survival)/; s/lrm/Logistic regression model (prediction)/')
+		until [[ $SELDEPVAR == 1 ]]
+		do
+		set +e
+		
+		if [[ $ANTYPE == "coxph" ]]; then
+			CLIN_DEP_COLUMN=$(dialog --no-items --colors --menu "Please, select the \Zb\Z4dependent time variable\Zn (in days).\nCSV file:\Zb\Z4"$CLINCSV"\Zn\nAnalysis type: \Zb\Z2$ANTYPEFULL" 10 70 0 "${aCLINCSV_COLUMNS[@]}" 2>&1 >/dev/tty)
+		else
+		CLIN_DEP_COLUMN=$(dialog --no-items --colors --menu "Please, select the \Zb\Z4dependent variable\Zn.\nCSV file:\Zb\Z4"$CLINCSV"\Zn\nAnalysis type: \Zb\Z2$ANTYPEFULL" 0 0 0 "${aCLINCSV_COLUMNS[@]}" 2>&1 >/dev/tty)
+		fi
+
+		eval ${SETMODE}
+
+		if [[ $ANTYPE == "coxph" ]]; then
+			set +e
+			CLIN_CENS_COLUMN=$(dialog --no-items --colors --menu "Please, select the \Zb\Z4censoring variable\Zn.\nCSV file:\Zb\Z4"$CLINCSV"\Zn\nAnalysis type: \Zb\Z2$ANTYPEFULL" 0 0 0 "${aCLINCSV_COLUMNS[@]}" 2>&1 >/dev/tty)
+			eval ${SETMODE}
+			echo "$CLIN_DEP_COLUMN" "$CLIN_CENS_COLUMN" | sed 's/ /:/g' >> ""$TMPDIR"/dep_vars"
+		else 
+			echo "$CLIN_DEP_COLUMN" >> ""$TMPDIR"/dep_vars"
+		fi
+		set +e
+		dialog --colors --defaultno --yesno "Do you want to select another \Zb\Z4dependent factor\Zn?\nCSV file:\Zb\Z4"$CLINCSV"\Zn\nAnalysis type: \Zb\Z2$ANTYPEFULL\Zn" 10 70 2>&1 >/dev/tty
+		local EXITCODE="$?"
+        	eval ${SETMODE}
+		SELDEPVAR="$EXITCODE"
+		done
+	done
+	wait
+
+	DEPVARS=$(cat ""$TMPDIR"/dep_vars" | sort -u | tr "\n" ";" | sed 's/;$//')
+
+	set +e
+	DISCRETE_VARS=$(dialog --no-items --colors --checklist "Please, select any number of \Zb\Z4discrete (categorical) independent\Zn variables to use.\nMain CSV file:\n\Zb\Z4"$MAINCSV"\Zn\nClin. CSV file:\n\Zb\Z4"$CLINCSV"\Zn\n" 0 0 0 "${aCLINCSV_COLUMNSN[@]}" 2>&1 >/dev/tty | sed 's/ /;/g')
+	eval ${SETMODE}
+		if [[ -z "${DISCRETE_VARS[@]}" ]]; then
+		DISCRETE_VARS="NA"
+		fi
+
+	set +e
+	CONTINUOUS_VARS=$(dialog --no-items --colors --checklist "Please, select any number of \Zb\Z4continuous independent\Zn variables to use.\nMain CSV file:\n\Zb\Z4"$MAINCSV"\Zn\nClin. CSV file:\n\Zb\Z4"$CLINCSV"\Zn\n" 0 0 0 "${aCLINCSV_COLUMNSN[@]}" 2>&1 >/dev/tty | sed 's/ /;/g')
+	eval ${SETMODE}
+		if [[ -z "${CONTINUOUS_VARS[@]}" ]]; then
+		CONTINUOUS_VARS="NA"
+		fi
+
+	set +e
+	GROUPING_VARS=$(dialog --no-items --colors --checklist "Please, select zero, one or two \Zb\Z4grouping\Zn variables to use. \Zb\Z2The entire group of samples is checked automatically, when no selection is made, and it does not have to be separately selected.\Zn\nMain CSV file:\n\Zb\Z4"$MAINCSV"\Zn\nClin. CSV file:\n\Zb\Z4"$CLINCSV"\Zn\n" 0 0 0 "${aCLINCSV_COLUMNSN[@]}" 2>&1 >/dev/tty | sed 's/ /;/g')
+	eval ${SETMODE}
+		if [[ -z "${GROUPING_VARS[@]}" ]]; then
+		GROUPING_VARS="ALL_SAMPLES"
+		fi
+
+	MAINCSV_DIR=$(echo "$MAINCSV" | awk 'NF{NF-=1}1' FS="/" OFS="/")
+
+	set +e
+	SIG_LEVEL=$(dialog --colors --inputbox "Please, provide the\Zb\Z2 statistical significance level\Zn to be used in the regression analyses. The default value is \Zb\Z20.05\Zn.\n\Z4INFO: The bootstap-based cross-validation and pdf generation will be performed only for models with a p-value for the main variable lower than the given value.\Zn\n\nMain CSV file:\n\Zb\Z4"$MAINCSV"\Zn\nClin. CSV file:\n\Zb\Z4"$CLINCSV"\Zn\n" 0 0 2>&1 >/dev/tty)
+	local EXITCODE="$?"
+        eval ${SETMODE}
+		if [[ -z "$SIG_LEVEL" ]] ; then
+			SIG_LEVEL=0.05
+		elif [[ ${SIG_LEVEL} > 1 ]]; then
+			dialog --colors --msgbox "\Zb\Z1The provided significance level is incorrect (it should be lower <= 1). Exiting." 0 0 2>&1 >/dev/tty
+			return 1
+		fi
+
+	set +e
+	dialog --colors --yesno "Do you want to adjust p-values for multiple comparisons (using the \Zb\Z4FDR\Zn correction)?\n\nMain CSV file:\n\Zb\Z4"$MAINCSV"\Zn\nClin. CSV file:\n\Zb\Z4"$CLINCSV"\Zn\n" 0 0 2>&1 >/dev/tty
+	local EXITCODE="$?"
+        eval ${SETMODE}
+	if [[ $EXITCODE -eq 0 ]]; then
+		FDR="TRUE"
+	else
+		FDR="FALSE"
+	fi
+
+if [[ "$IS_CONTINUOUS" == "TRUE" ]]; then
+set +e
+dialog --colors --yesno "Do you want to perform \Zb\Z2automatic data calibration\Zn so that, for each main independent variable, values range from 0 to 1?\n\nMain CSV file:\n\Zb\Z4"$MAINCSV"\Zn\nClin. CSV file:\n\Zb\Z4"$CLINCSV"\Zn\n" 0 0 2>&1 >/dev/tty
+	local EXITCODE="$?"
+        eval ${SETMODE}
+	if [[ $EXITCODE -eq 0 ]]; then
+		CALIBRATE="TRUE"
+	else
+		CALIBRATE="FALSE"
+	fi
+else
+	CALIBRATE="FALSE"
+fi
+
+	dialog --colors --infobox "Regression analysis with \Zb\Z2regression.analyses.r app\Zn is being performed...\nMain CSV file:\n\Zb\Z4"$MAINCSV"\Zn\nClin. CSV file:\n\Zb\Z4"$CLINCSV"\Zn\nOutput dir: \Zb\Z4"$MAINCSV_DIR"\Zn\nSample col. (main csv): \Zb\Z4"$MAIN_SAMPLE_COLUMN"\Zn\nMain var. continuous: \Zb\Z4"$IS_CONTINUOUS"\Zn\nSample col. (clin. csv): \Zb\Z4"$CLIN_SAMPLE_COLUMN"\Zn\nDependent vars: \Zb\Z4"$DEPVARS"\Zn\nDiscrete independent vars: \Zb\Z4"$DISCRETE_VARS"\Zn\nContinuous independent vars: \Zb\Z4"$CONTINUOUS_VARS"\Zn\nGrouping vars: \Zb\Z4"$GROUPING_VARS"\Zn\nAnalyses types: \Zb\Z4"$ANTYPES"\Zn\nSignificance level: \Zb\Z4"$SIG_LEVEL"\Zn\nFDR correction: \Zb\Z4"$FDR"\Zn\nData calibration: \Zb\Z4"$CALIBRATE"\Zn\n" 0 0 2>&1 >/dev/tty
+
+	set +e
+	regression.analyses.r "$MAINCSV" "$MAIN_SAMPLE_COLUMN" "$IS_CONTINUOUS" "$CLINCSV" "$CLIN_SAMPLE_COLUMN" "$DEPVARS" "$DISCRETE_VARS" "$CONTINUOUS_VARS" "$GROUPING_VARS" "$CPUS" "$ANTYPES" "$MAINCSV_DIR" "$SIG_LEVEL" "$FDR" "$CALIBRATE" > ""$MAINCSV_DIR"/regression.analyses.r.log" 2>&1
+	
+	if [[ "$?" != 0  ]]; then	
+	dialog --colors --infobox "Regression analysis with \Zb\Z2regression.analyses.r app\Z1 is not complete because of an error.\nThe last 10 lines of the log file:\Zn\Z2\n""$MAINCSV_DIR"/regression.analyses.r.log"\Zn read:\n\Zb\Z4'$(tail -n 10 ""$MAINCSV_DIR"/regression.analyses.r.log" | sed 's/$/\\n/g')'\n\ZnMain CSV file:\n\Zb\Z4"$MAINCSV"\Zn\nClin. CSV file:\n\Zb\Z4"$CLINCSV"\Zn\nOutput dir: \Zb\Z4"$MAINCSV_DIR"\Zn\nSample col. (main csv): \Zb\Z4"$MAIN_SAMPLE_COLUMN"\Zn\nMain var. continuous: \Zb\Z4"$IS_CONTINUOUS"\Zn\nSample col. (clin. csv): \Zb\Z4"$CLIN_SAMPLE_COLUMN"\Zn\nDependent vars: \Zb\Z4"$DEPVARS"\Zn\nDiscrete independent vars: \Zb\Z4"$DISCRETE_VARS"\Zn\nContinuous independent vars: \Zb\Z4"$CONTINUOUS_VARS"\Zn\nGrouping vars: \Zb\Z4"$GROUPING_VARS"\Zn\nAnalyses types: \Zb\Z4"$ANTYPES"\Zn\nSignificance level: \Zb\Z4"$SIG_LEVEL"\Zn\nFDR correction: \Zb\Z4"$FDR"\Zn\nData calibration: \Zb\Z4"$CALIBRATE"\Zn\n" 0 0 2>&1 >/dev/tty
+		sleep 3
+		touch ""$TMPDIR"/job_error"
+		return 1
+	else
+		if [[ $(cat ""$MAINCSV_DIR"/regression.analyses.r.log" | wc -l) -gt 200 ]]; then
+			(head -n 100; tail -n 100) < ""$MAINCSV_DIR"/regression.analyses.r.log" > ""$MAINCSV_DIR"/regression.analyses.r.log.tmp" && mv ""$MAINCSV_DIR"/regression.analyses.r.log.tmp" ""$MAINCSV_DIR"/regression.analyses.r.log"
+		fi
+	fi
+	eval ${SETMODE}
+}
+function f_submission() {
+until [[ -n $WEBIN_USER ]]
+do
+set +e
+WEBIN_USER=$(dialog --colors --inputbox "Please, provide \Zb\Z4your user name\Zn to the ENA Webin submission portal." 0 0 2>&1 >/dev/tty)
+eval ${SETMODE}
+	test -z $WEBIN_USER && dialog --colors --msgbox "\Z1\ZbThe\Z4 user name\Z1 was not provided. Please, try again." 0 0 2>&1 >/dev/tty
+done
+
+until [[ -n $WEBIN_PASS ]]
+do
+set +e
+WEBIN_PASS=$(dialog --colors --inputbox "Please, provide \Zb\Z4your password\Zn to the ENA Webin submission portal." 0 0 2>&1 >/dev/tty)
+eval ${SETMODE}
+	test -z $WEBIN_PASS && dialog --colors --msgbox "\Z1\ZbThe\Z4 password\Z1 was not provided. Please, try again." 0 0 2>&1 >/dev/tty
+done
+
+until [[ -n $STUDY_ID ]]
+do
+set +e
+STUDY_ID=$(dialog --colors --inputbox "Please, provide \Zb\Z4the Webin study ACCESSION no.\Zn on the ENA Webin submission portal." 0 0 2>&1 >/dev/tty)
+eval ${SETMODE}
+	test -z $STUDY_ID && dialog --colors --msgbox "\Z1\ZbThe\Z4 Webin study ACCESSION no.\Z1 was not provided. Please, try again." 0 0 2>&1 >/dev/tty
+done
+
+until [[ -n $STUDY_NAME ]]
+do
+set +e
+STUDY_NAME=$(dialog --colors --inputbox "Please, provide \Zb\Z4the Webin study NAME\Zn on the ENA Webin submission portal." 0 0 2>&1 >/dev/tty)
+eval ${SETMODE}
+	test -z $STUDY_NAME && dialog --colors --msgbox "\Z1\ZbThe\Z4 Webin study NAME\Z1 was not provided. Please, try again." 0 0 2>&1 >/dev/tty
+done
+
+aINSTRUMENTS=(
+"Illumina NovaSeq 6000"
+"Illumina MiSeq"
+"Illumina iSeq 100"
+	)
+
+INSTRUMENT=$(dialog --no-items --colors --menu "On which NGS platform were \Zb\Z4the NGS analyses\Zn performed?\Zb\Zn" 0 0 0 "${aINSTRUMENTS[@]}" 2>&1 >/dev/tty)
+
+aSOURCES=(
+	'GENOMIC'
+	'GENOMIC SINGLE CELL'
+	'TRANSCRIPTOMIC'
+	'TRANSCRIPTOMIC SINGLE CELL'
+	)
+SOURCE=$(dialog --no-items --colors --menu "What is the \Zb\Z4source of the NGS library\Zn being submitted to ENA?\Zb\Zn" 0 0 0 "${aSOURCES[@]}" 2>&1 >/dev/tty)
+
+aSTRATEGIES=(
+	'WGS'
+	'WXS'
+	'RNA-Seq'
+	'Targeted-Capture'
+	'miRNA-Seq'
+	)
+STRATEGY=$(dialog --no-items --colors --menu "What is the \Zb\Z4type of the NGS library\Zn being submitted to ENA?\Zb\Zn" 0 0 0 "${aSTRATEGIES[@]}" 2>&1 >/dev/tty)
+
+set +e
+INPUTDIR=$(dialog --title "Please, select the directory containing FASTQ/BAM/CRAM files to be submitted to ENA." --fselect ""$WORK_DIR"/RUNS/" 10 0 0 2>&1 >/dev/tty)
+eval ${SETMODE}
+
+if [[ ! -d "$INPUTDIR" ]] || [[ -z $(ls $INPUTDIR | egrep -i "^.*\.(bam|cram|fastq.gz)$")  ]]; then
+dialog --colors --msgbox "\Zb\Z1The \Z4"$INPUTDIR"\Z1 does not exist or does not contain FASTQ, BAM or CRAM files." 0 0 2>&1 >/dev/tty
+return 1
+fi
+
+aFILETYPES=(
+	'FASTQ'
+	'BAM'
+	'CRAM'
+	)
+FILETYPE=$(dialog --no-items --colors --menu "What \Zb\Z4type of files\Zn are you submitting to ENA?\Zb\Zn" 0 0 0 "${aFILETYPES[@]}" 2>&1 >/dev/tty)
+
+if [[ "$FILETYPE" == 'BAM' ]] || [[ "$FILETYPE" == 'CRAM' ]]; then
+	aDUPSTATS=(
+		'BAMs with duplicates'
+		'BAMs without duplicates'
+		)
+		DUPSTAT=$(dialog --no-items --colors --menu "What \Zb\Z4type of BAM/CRAM files\Zn are you submitting to ENA?\Zb\Zn" 0 0 0 "${aDUPSTATS[@]}" 2>&1 >/dev/tty)
+	if [[ $DUPSTAT == 'BAMs with duplicates' ]]; then
+		SUFFIX="_sorted"
+	elif [[ $DUPSTAT == 'BAMs without duplicates' ]]; then
+		SUFFIX="_sorted.no_dups"
+	fi
+else
+	SUFFIX="NA"
+fi
+
+set +e
+ACCESSIONS=$(dialog --title "Please, provide the path to a tab-delimited txt file with sample accession numbers (samples aliases should be the same as sample prefixes in the corresponding FASTQ/BAM/CRAM file names). The sample aliases/prefixes must not contain underscore characters." --fselect ""$WORK_DIR"/" 10 0 0 2>&1 >/dev/tty)
+eval ${SETMODE}
+
+if [[ ! -f "$ACCESSIONS" ]]; then
+dialog --colors --msgbox "\Zb\Z1The \Z4"$ACCESSIONS"\Z1 file does not exist." 0 0 2>&1 >/dev/tty
+return 1
+fi
+
+dialog --colors --infobox "Submission of NGS data to the ENA portal with \Zb\Z2ENA-submitter app\Zn is being performed...\nStudy ID/Name: \Zb\Z4""$STUDY_ID"/"$STUDY_NAME""\Zn\nNGS Platform: \Zb\Z4'$INSTRUMENT'\Zn\nNGS library source: \Zb\Z4'$SOURCE'\Zn\nNGS library type: \Zb\Z4"$STRATEGY"\Zn\nInput directory: \Zb\Z4"$INPUTDIR"\Zn\nFile type: \Zb\Z4"$FILETYPE"\Zn\nBAM/CRAM suffix: \Zb\Z4"$SUFFIX"\Zn\nFile with sample accession numbers: \Zb\Z4"$ACCESSIONS"\Zn\n" 0 0 2>&1 >/dev/tty
+	set +e
+	source "/programs/miniconda3/etc/profile.d/conda.sh"
+	conda activate r-new
+
+	ENA-submitter.py -u "$WEBIN_USER" -p "$WEBIN_PASS" -S "$STUDY_ID" -n "$STUDY_NAME" -I "$INSTRUMENT" -s "$SOURCE" -t "$STRATEGY" -f "$INPUTDIR" -r "$FILETYPE" -x "$SUFFIX" -a "$ACCESSIONS" -T 10 > ""$INPUTDIR"/ENA-submitter.py.log" 2>&1
+	
+	if [[ "$?" != 0  ]] || [[ -z $(tail ""$INPUTDIR"/ENA-submitter.py.log" | grep "All samples have been submitted to the ENA successfully.") ]]; then
+	dialog --colors --infobox "Submission of NGS data to the ENA portal with \Zb\Z2ENA-submitter app\Z1 is not complete because of an error.\nThe last 10 lines of the log file:\Zn\Z2\n""$INPUTDIR"/ENA-submitter.py.log"\Zn read:\n\Zb\Z4'$(tail -n 10 ""$INPUTDIR"/ENA-submitter.py.log" | sed 's/$/\\n/g')'\nStudy ID/Name: \Zb\Z4""$STUDY_ID"/"$STUDY_NAME""\Zn\nNGS Platform: \Zb\Z4'$INSTRUMENT'\Zn\nNGS library source: \Zb\Z4'$SOURCE'\Zn\nNGS library type: \Zb\Z4"$STRATEGY"\Zn\nInput directory: \Zb\Z4"$INPUTDIR"\Zn\nFile type: \Zb\Z4"$FILETYPE"\Zn\nBAM/CRAM suffix: \Zb\Z4"$SUFFIX"\Zn\nFile with sample accession numbers: \Zb\Z4"$ACCESSIONS"\Zn\n" 0 0 2>&1 >/dev/tty
+		sleep 3
+		touch ""$TMPDIR"/job_error"
+		return 1
+	fi
+	eval ${SETMODE}
+}
+
+# END FUNCTIONS
+
+USERID=$(id -u)
+WORK_DIR="/workspace/"$USER"/"$APPNAME""
+SHARE_DIR="/shares/NGS"
+FASTQ_DIR="/shares/NGS"
+CONDAROOT="$(conda info -s | grep "CONDA_ROOT" | awk '{print $2}')"
+source "/programs/miniconda3/etc/profile.d/conda.sh"
+
+if [[ -n $CONDA_PREFIX ]]; then unset CONDA_OK; until [[ -n $CONDA_OK ]] || [[ -z $CONDA_PREFIX ]]; do test $(basename $CONDA_PREFIX) == $(cat .bashrc | grep "conda activate" | awk '{print $3}') && CONDA_OK="OK" || conda deactivate; done; fi
+test -z $CONDA_PREFIX && echo "Conda environment seems to be configured incorrectly." && exit 1
+
+#WORK_DIR="/mnt/lustre/scratch2/people/"$USER"/"$APPNAME""
+TMPDIR="/tmp/"$USER"/"$APPNAME""
+#TMPDIR=""$WORK_DIR"/TMPDIR"
+#TMPDIR_BIG=""$WORK_DIR"/tmp/"
+TMPDIR_BIG="$TMPDIR"
+mkdir -p "$WORK_DIR"
+mkdir -p "$TMPDIR"
+mkdir -p "$TMPDIR_BIG"
+mkdir -p "$SHARE_DIR"
+TMP="$TMPDIR"
+TEMP="$TMPDIR"
+export TMPDIR TMP TEMP
+PROCESSORS=$(cat /proc/cpuinfo | sed -ne '/processor/p' | wc -l)
+DEFAULT_CPUS=$(echo "print(int(round($PROCESSORS/2,0)))" | python)
+
+f_instance
+
+#rm -rf ""$TMPDIR"/"*			
+#rm -rf ""$TMPDIR_BIG"/"*
+rm -rf ""$WORK_DIR"/"$APPNAME".log"
+cd "$TMPDIR"
+for i in $(find ""$WORK_DIR"/GENOMES/" -regex ".*/STAR"); do STAR --genomeDir "$i" --genomeLoad Remove; done >> ""$WORK_DIR"/"$APPNAME".log" 2>&1
+trap "exit" INT TERM ERR
+trap "kill 0" EXIT
+
+SETMODE='set -e'
+eval ${SETMODE}
+
+dialog --sleep 2 --no-collapse --title "Welcome to:" --infobox "$(figlet "$APPNAME")" 0 0 2>&1 >/dev/tty
+
+f_email_correct
+f_cpus
+
+rm -rf "$TMPDIR"/job_error* $WORK_DIR/ERRORS.log
+
+unset EXIT
+until [[ "$EXIT" == 1 ]]
+do
+set +e
+aCMD=(dialog --no-items --colors --menu "Which step of the \Zb\Z4NGS analysis\Zn should be performed?" 0 0 0)
+
+aOPTIONS=(
+"FASTQ files downloading"
+"FASTQ files renaming, integrity checking, and merging"
+"Quality check of the merged/trimmed FASTQ files (app: FASTQC)"
+"Display the quality of FASTQ files (FASTQC results)"
+"Adapter cutting and FASTQ files quality-based trimming (app: TRIMMOMATIC)"
+"Display the results of the FASTQ files trimming (TRIMMOMATIC results)"
+"Mapping DNA/RNA sequences to a reference sequence (apps: STAR and HISAT2)"
+"Analyzing, comparing and subsetting the results of DNA/RNA sequences mapping (apps: QUALIMAP, SAMTOOLS & GATK)"
+"Display the comparison of DNA/RNA sequences mapping"
+"Run Integrative Genomics Viewer (IGV)"
+"Gene expression analysis (apps: DESEQ2 and EDGER)"
+"Comparison of gene expression analysis results"
+"Genetic variant effect analysis with ENSEMBL VEP"
+"Regression analysis"
+"NGS data submission to the European Nucleotide Archive (ENA)"
+"Quit"
+)
+
+aCHOICES=$("${aCMD[@]}" "${aOPTIONS[@]}" 2>&1 >/dev/tty)
+eval ${SETMODE}
+
+for OPT in "${aCHOICES[@]}"
+	do
+	case "$OPT" in
+	"FASTQ files downloading")
+	f_timestamp f_fastq_download ;;
+	"FASTQ files renaming, integrity checking, and merging")
+	f_timestamp f_rename.merge ;;
+	"Quality check of the merged/trimmed FASTQ files (app: FASTQC)")
+	f_timestamp f_run_job f_fastq_qc "FASTQ" "FASTQC" "--fastqc" ;;
+	"Display the quality of FASTQ files (FASTQC results)")
+	f_Rdisplay FASTQC "--subfolder:FASTQ/FASTQC" "--subfolder:FASTQ_TRIMMED/FASTQC" ;;
+	"Adapter cutting and FASTQ files quality-based trimming (app: TRIMMOMATIC)")
+	f_timestamp f_run_job f_trimmomatic "FASTQ" "FASTQ_TRIMMED" "--trimmomatic" ;;
+	"Display the results of the FASTQ files trimming (TRIMMOMATIC results)")
+	f_Rdisplay FASTQ_TRIMMED "--subfolder:FASTQ_TRIMMED" ;;
+	"Mapping DNA/RNA sequences to a reference sequence (apps: STAR and HISAT2)")
+	f_timestamp f_run_job f_seq_mapping "FASTQ" "MAPPINGS" "--mapping" ;;
+	"Analyzing, comparing and subsetting the results of DNA/RNA sequences mapping (apps: QUALIMAP, SAMTOOLS & GATK)")
+	f_timestamp f_run_job f_seq_comparing "MAPPINGS" "COMPARISON" "--comparison" ;;
+	"Display the comparison of DNA/RNA sequences mapping")
+	f_Display_mapping_comparison ;;
+	"Run Integrative Genomics Viewer (IGV)")
+	igv 2>>$WORK_DIR/ERRORS.log >> ""$WORK_DIR"/"$APPNAME".log" 2>>$WORK_DIR/ERRORS.log ;;
+	"Gene expression analysis (apps: DESEQ2 and EDGER)")
+	f_timestamp f_run_job f_gene_expression "--expression";;
+	"Comparison of gene expression analysis results")
+	f_timestamp f_run_job f_gene_expression_comparison "--exp.comparison";;
+	"Genetic variant effect analysis with ENSEMBL VEP")
+	f_timestamp f_run_job f_VEP "--VEP";;
+	"Regression analysis")
+	f_timestamp f_regression;;
+	"NGS data submission to the European Nucleotide Archive (ENA)")
+	f_timestamp f_submission;;
+	"Quit")
+	dialog --sleep 3 --colors --no-collapse --title "Goodbye." --infobox '\n"Nothing in life is to be feared, it is only to be understood.\nNow is the time to understand more, so that we may fear less."\n\n\Zb\Z4Maria Sklodowska-Curie\n\n' 0 0 2>&1 >/dev/tty
+	rm -rf "$TMPDIR" "$TMPDIR_BIG"
+#	rm "$WORK_DIR"/REFSEQS/*.fa -rf
+#	reset screen
+	cd
+	EXIT=1 ;;
+	*)
+	;;
+	esac
+	done
+	wait
+done
