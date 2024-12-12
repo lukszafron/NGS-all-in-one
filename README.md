@@ -1,1 +1,1 @@
-# $${\color{lightgreen}\NGS-all-in-one}$$
+# $${\color{lightgreen}NGS-all-in-one}$$
